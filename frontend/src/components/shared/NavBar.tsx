@@ -7,6 +7,7 @@ const links = [
   { to: '/monitor', label: 'Monitor' },
   { to: '/negotiate', label: 'Negotiate' },
   { to: '/history', label: 'History' },
+  { to: '/cloud', label: 'Cloud' },
   { to: '/about', label: 'About' },
 ];
 

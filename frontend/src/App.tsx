@@ -9,6 +9,7 @@ import Negotiate from './pages/Negotiate';
 import Trajectory from './pages/Trajectory';
 import History from './pages/History';
 import About from './pages/About';
+import Cloud from './pages/Cloud';
 
 export default function App() {
   // Mounted once here (not per-page) so the connection and its status
@@ -43,6 +44,7 @@ function AppShell() {
           <Route path="/negotiate/:id?" element={<Negotiate />} />
           <Route path="/negotiate/:id/trajectory" element={<Trajectory />} />
           <Route path="/history" element={<History />} />
+          <Route path="/cloud" element={<Cloud />} />
           <Route path="/about" element={<About />} />
         </Routes>
       </div>

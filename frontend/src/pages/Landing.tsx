@@ -246,6 +246,13 @@ export default function Landing() {
             >
               View negotiation ledger +
             </Link>
+
+            <Link
+              to="/cloud"
+              className="border-b border-border-light px-1 py-2.5 font-mono text-[11px] uppercase tracking-wider text-text-secondary transition hover:border-accent hover:text-text-primary"
+            >
+              Cluster scope +
+            </Link>
           </div>
         </motion.div>
 

@@ -99,6 +99,27 @@ Built in `frontend/src/components/negotiation/ResolutionCard.tsx` — squared se
 *(filterable table of past conjunctions and outcomes)*
 Built in `frontend/src/pages/History.tsx` — archive briefing + derived record counters + fixed-column conjunction ledger. Uses square status flags, tabular figures, object-pair provenance, before→after miss distance, and explicit skeleton/error/empty states. Filter control is a squared, labelled operational input with hover and focus-visible states.
 
+### Cloud Page (/cloud)
+*(ground-station control room for the Redis queue + worker cluster)*
+
+Files: `frontend/src/pages/Cloud.tsx`, `frontend/src/components/cloud/*`, `frontend/src/lib/{cloudApi,cloudMock,useCloudStats}.ts`
+Last updated: 2026-11-10
+
+| Property | Class / pattern |
+|---|---|
+| Background | `ops-grid bg-background`; panels `border border-border bg-surface-muted/75`, square, no radius |
+| Typography | Landing-style headline ("SCALE. PRIORITIZE. RECOVER.", last word `text-accent-light` + glow); every mono label is 14px (projector legibility), tracked uppercase; numerals `font-mono text-[clamp(...)]` zero-padded |
+| Accent discipline | blue = normal flow, amber = critical/priority, red = dead/failed, green = healthy/online; always paired with a label or shape (diamond / square / X) |
+| Motion | anime.js entry via `useAnimeStagger`/`useAnimeEntry`; scope animation is one rAF loop (~30 fps, pooled SVG elements, transform/opacity only), paused when the tab is hidden, static under reduced motion |
+
+**Shared cloud components** (extracted because each appears 2+ times on the page): `StatusChip` (mono caps chip, tinted border + status light), `PanelHeader` (eyebrow above bold title), `StatCell` (big zero-padded numeral cell, 1 s border/glow flash via `flashOn`), `Sparkline` (inline SVG, 120 samples, min/max, dot on latest), `LeftRuleCallout` (coloured left rule + label + statement), `CornerBrackets` (panel corner brackets, `.cloud-brackets` in globals.css), `tone.ts` (Tone type + text colour map).
+
+**ClusterConstellation** (the hero): queue = glowing core with depth numeral and a particle swirl that thickens with depth; 8 worker slots on 3 orbit rings (angles from a min-spacing search, rigid drift so labels never touch). Real-data mapping: throughput -> blue job-packet rate; alive workers -> lit nodes (newly lit slots boot in sequence, 260 ms apart, green boot ring); a rise in `critical_latency_ms.count` -> amber diamond packets crossing the swirl + amber core ring + "PRIORITY LANE +N"; a worker with `alive:false` -> red node, X, flickering broken ring, stays visible; a rise in `retries_total` -> dashed red square packet from the dead node to a live one (re-claim); a jump in queue depth -> inbound ingest ring. Documented limit: critical packets are inferred from the critical-count delta, not per-job events.
+
+**Offline / mock:** link failure renders a History-style `border-l-2 border-danger` block ("CLUSTER LINK DOWN", what to check, auto-retry) and dims the scope. `/cloud?mock=idle|storm|scaled|critical|dead|down` feeds scripted stats through the same hook for QA; an amber "MOCK DATA" chip is shown and the mock code path never runs without the param.
+
+**Control dock:** a sticky bottom bar (Storm 800 priority/fifo, Inject 3 critical, Reset with `window.confirm`), disabled while a request is in flight, last-action status line.
+
 ### About Page
 *(static content, tech stack summary, roadmap)*
 Built in `frontend/src/pages/About.tsx` — asymmetric system manifest with mission directive, four safety invariants, source/computation register, simulation-scope declaration, and phase roadmap. Uses the same border grid, telemetry typography, semantic status squares, and restrained scan motion as Landing.
