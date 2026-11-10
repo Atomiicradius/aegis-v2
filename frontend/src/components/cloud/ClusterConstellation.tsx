@@ -431,6 +431,9 @@ function WorkerNode({ index, state, bootKey, bootDelay, pulseRef }: NodeProps) {
   }
 
   return (
+    <g>
+      {/* empty-slot marker stays under the node so the slot is visible until its boot animation starts */}
+      <circle r="18" fill="none" className="stroke-text-muted/50" strokeWidth="1" strokeDasharray="2 5" />
     <g
       key={bootKey}
       className="cloud-node-boot"
@@ -443,6 +446,7 @@ function WorkerNode({ index, state, bootKey, bootDelay, pulseRef }: NodeProps) {
       <circle r="3" className="fill-accent-light" />
       <rect x="13" y="-19" width="7" height="7" className="fill-success" />
       <text y="48" textAnchor="middle" className="fill-text-primary font-mono" fontSize="19" letterSpacing="2" fontWeight="600">{label}</text>
+    </g>
     </g>
   );
 }
