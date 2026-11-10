@@ -1,8 +1,14 @@
-"""events.py — synthetic conjunction events for load tests."""
+"""events.py — synthetic conjunction events for load tests.
+
+The satellites and their orbits are REAL (CelesTrak TLEs: EVENT_POOL=pool draws from backend/app/data/cache/
+tle_pool.json, EVENT_POOL=curated from the 15-object snapshot). The close approaches are SYNTHETIC: a random
+pair is given an invented miss distance and time to TCA. These are load-test events, not real conjunctions.
+"""
 
 from __future__ import annotations
 
 import random
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 from backend.cloud.jobs import Job
@@ -25,6 +31,18 @@ def tle_epoch(line1: str) -> datetime:
 
 def eligible_ids(objects) -> list[str]:
     return sorted(o.norad_id for o in objects if o.norad_id not in _DOCKED)
+
+
+def pool_summary(objects) -> dict:
+    """What the storm draws from: {size, groups: {group: count}, mode}. Docked objects are not counted.
+
+    mode is 'pool' (EVENT_POOL=pool and tle_pool.json present) or 'curated'. Pure read: no propagation.
+    """
+    from backend.app.profiles import object_group, pool_active
+
+    ids = eligible_ids(objects)
+    return {"size": len(ids), "groups": dict(Counter(object_group(i) for i in ids)),
+            "mode": "pool" if pool_active() else "curated"}
 
 
 def _build(a: str, b: str, miss_km: float, hours_to_tca: float, objects) -> Job:

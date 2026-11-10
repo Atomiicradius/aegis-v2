@@ -7,18 +7,18 @@ Use **two PowerShell windows**: A = commands, B = autoscaler. Dashboard: http://
 The React app (`/cloud` page) needs the original backend on :8000, the cloud stack (API on :8010) and Vite on :5173.
 ```powershell
 # window 1 - cloud stack (Docker Desktop running)
-cd D:egis-v2
+cd D:\aegis-v2
 Set-Content .env "LEASE_SECONDS=10"
 docker compose up -d redis api
 docker compose up -d --scale worker=2 worker
 
 # window 2 - original backend (OFFLINE=1: TLEs come from the committed snapshot, never waits on CelesTrak)
-cd D:egis-v2ackend
+cd D:\aegis-v2\backend
 $env:OFFLINE = "1"
 python -m uvicorn app.main:app --port 8000
 
 # window 3 - React app
-cd D:egis-v2rontend
+cd D:\aegis-v2\frontend
 npm run dev
 ```
 Open http://localhost:5173/cloud . The nav badge (top right) reads **Live** on every page once window 2 is up; **Reconnecting** if the backend is down.
@@ -37,6 +37,8 @@ Invoke-RestMethod -Method Post http://localhost:8010/api/cloud/reset
 start http://localhost:8010
 ```
 Checklist: dashboard dot is **green**, Live workers = **2**, everything else 0, policy/LLM pill shows `stub (150 ms)`.
+In the React `/cloud` header strip the **objects / 400** chip shows the size of the real-satellite pool the storm draws from (`006` = curated fallback: the pool file is missing or `EVENT_POOL=curated`).
+After pulling code or the pool file you must `docker compose build` (the pool JSON is baked into the image).
 Between rehearsals always run the reset line again (`Invoke-RestMethod -Method Post http://localhost:8010/api/cloud/reset`;
 `python scripts/reset_redis.py` does NOT work on the host - redis is only installed in the image; use
 `docker compose run --rm worker python scripts/reset_redis.py` if the API is down).
@@ -46,7 +48,7 @@ Say: queue + 2 workers, nothing happening. Point at the heartbeat ages (< 2 s) i
 
 ## 2. Storm: 800 events, 2 workers (about 90 s if left alone)
 Click **Storm 800 (priority)** (or: `Invoke-RestMethod -Method Post -Uri http://localhost:8010/api/cloud/storm -ContentType 'application/json' -Body '{"n":800,"critical":0,"policy":"priority"}'`).
-Look at: Queue depth jumps to ~800 within 2 s, throughput settles at ~6.4 jobs/s, latency p95 climbs.
+Look at: Queue depth jumps to ~800 within 2 s, throughput settles at ~6.1-6.4 jobs/s (about 3.1 per worker: stub sleep + ~14 ms of validation per job), latency p95 climbs.
 
 ## 3. Autoscaler 2 -> 8 (35 s drain instead of 92 s)
 Window B, started right after the storm (it also works if started before):
@@ -80,7 +82,7 @@ start results\throughput_vs_workers.png
 start results\critical_latency_fifo_vs_priority.png
 Get-Content results\benchmark.csv
 ```
-Say: throughput scales ~linearly (3.2 -> 25.7 jobs/s for 1 -> 8 workers); priority costs no throughput and cuts critical latency 15-77x. Re-run: `python scripts\benchmark.py` (~7 min, FLUSHES Redis).
+Say: the events use real satellites and real orbits (Starlink, OneWeb, Iridium NEXT, ... from CelesTrak) but the close approaches are invented for load - none is a real conjunction. Throughput scales ~linearly (3.2 -> 25.7 jobs/s for 1 -> 8 workers); priority costs no throughput and cuts critical latency 15-77x. Re-run: `python scripts\benchmark.py` (~7 min, FLUSHES Redis).
 
 ## Cleanup
 ```powershell

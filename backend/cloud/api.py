@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 from redis.exceptions import RedisError
 
 from backend.app.profiles import load_all_tracked_objects
-from backend.cloud.events import make_critical_job, random_job
+from backend.cloud.events import make_critical_job, pool_summary, random_job
 from backend.cloud.queue import Queue
 
 WINDOW = 500          # results used for latency stats
@@ -49,6 +49,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 q = Queue()
+POOL = pool_summary(load_all_tracked_objects())   # loaded once at start-up (read-only, no network)
 
 
 @app.exception_handler(RedisError)
@@ -114,6 +115,8 @@ def stats() -> dict:
         "policy": policy or os.environ.get("POLICY", "fifo"),
         "llm_mode": os.environ.get("LLM_MODE", "real"),
         "stub_ms": int(os.environ.get("LLM_STUB_MS", "50")),
+        "pool_size": POOL["size"],        # real satellites the storm draws from (added; existing keys unchanged)
+        "pool_groups": POOL["groups"],    # {group: count}, e.g. {"starlink": 105, ...}
         "server_time": datetime.now(timezone.utc).isoformat(),
     }
 

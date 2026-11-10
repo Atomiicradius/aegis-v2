@@ -19,6 +19,7 @@ import hashlib
 import json
 import logging
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -85,13 +86,41 @@ def _propagate_raw(raw_tles) -> list[TrackedObject]:
     return results
 
 
+POOL_PATH = Path(__file__).parent / "data" / "cache" / "tle_pool.json"
+
+
+def event_pool_mode() -> str:
+    """EVENT_POOL = 'pool' (hundreds of real LEO satellites) | 'curated' (the 15-object snapshot).
+
+    The code default is 'curated' (= the pre-pool behaviour); the Docker image and
+    docker-compose set EVENT_POOL=pool. Never touches the network either way.
+    """
+    mode = os.environ.get("EVENT_POOL", "curated").strip().lower()
+    if mode not in ("pool", "curated"):
+        raise ValueError(f"EVENT_POOL must be pool|curated; got {mode!r}")
+    return mode
+
+
+def _read_pool():
+    """(RawTLE list, {norad_id: group}) from tle_pool.json (scripts/fetch_tle_pool.py), or None."""
+    from backend.app.data.celestrak import RawTLE
+
+    if not POOL_PATH.exists():
+        return None
+    data = json.loads(POOL_PATH.read_text(encoding="utf-8"))  # corrupt file raises: loud on purpose
+    return [RawTLE(**o) for o in data["objects"]], dict(data["groups"])
+
+
 _tracked_objects: list[TrackedObject] | None = None
 _tracked_objects_source: str | None = None
+_curated_ids: frozenset[str] = frozenset()
+_pool_groups: dict[str, str] = {}      # norad_id -> constellation group (pool mode only)
+_pool_active = False                   # True once the pool was really loaded
 
 
 def load_all_tracked_objects() -> list[TrackedObject]:
-    """Snapshot (or live, if OFFLINE=0) -> fixture. Memoised per process."""
-    global _tracked_objects, _tracked_objects_source
+    """Snapshot (or live, if OFFLINE=0) -> fixture, plus the pool when EVENT_POOL=pool. Memoised per process."""
+    global _tracked_objects, _tracked_objects_source, _curated_ids, _pool_groups, _pool_active
     if _tracked_objects is not None:
         return _tracked_objects
 
@@ -113,9 +142,43 @@ def load_all_tracked_objects() -> list[TrackedObject]:
         objects = load_tracked_objects_fixture()
         source = "fixture"
 
+    curated_ids = frozenset(o.norad_id for o in objects)
+    groups: dict[str, str] = {}
+    if event_pool_mode() == "pool":
+        pool = _read_pool()
+        if pool is None:
+            msg = f"EVENT_POOL=pool but {POOL_PATH} is missing - FALLING BACK TO THE CURATED SET ({len(objects)} objects)"
+            logger.warning("[profiles] %s", msg)
+            print(f"WARNING: {msg}", file=sys.stderr, flush=True)
+        else:
+            raw_pool, groups = pool
+            have = set(curated_ids)
+            extra = _propagate_raw([r for r in raw_pool if r.norad_id not in have])
+            objects = [*objects, *extra]       # curated first (keeps its TLEs), pool after
+            source += "+pool"
+
     logger.info("[profiles] loaded %d tracked objects from %s", len(objects), source)
     _tracked_objects, _tracked_objects_source = objects, source
+    _curated_ids, _pool_groups, _pool_active = curated_ids, groups, bool(groups)
     return objects
+
+
+def curated_ids() -> frozenset[str]:
+    """NORAD ids of the curated snapshot (always part of the validation set)."""
+    load_all_tracked_objects()
+    return _curated_ids
+
+
+def object_group(norad_id: str) -> str:
+    """Constellation group of a pool object ('starlink', 'oneweb', ...) or 'curated'."""
+    load_all_tracked_objects()
+    return _pool_groups.get(norad_id, "curated")
+
+
+def pool_active() -> bool:
+    """True when EVENT_POOL=pool AND tle_pool.json was found (False after the curated fallback)."""
+    load_all_tracked_objects()
+    return _pool_active
 
 
 def tracked_objects_source() -> str:
@@ -158,6 +221,42 @@ def _stable_id_number(norad_id: str) -> int:
     return int.from_bytes(hashlib.sha256(norad_id.encode("utf-8")).digest()[:8], "big")
 
 
+# Derived profiles for pool objects, by constellation: (operator, (mvi lo, hi), (fuel % lo, hi), (dv m/s lo, hi)).
+# Mission value, fuel margin and available dv are *illustrative* (they drive the negotiation, they are not
+# real operator data). Ranges follow what each constellation is: Starlink = cheap, numerous, strong
+# electric propulsion; Iridium = a service that must not drop; stations = crewed/high value.
+_GROUP_PROFILES: dict[str, tuple[str, tuple[float, float], tuple[float, float], tuple[float, float]]] = {
+    "starlink": ("SpaceX Starlink", (0.30, 0.45), (60.0, 90.0), (3.0, 4.0)),
+    "oneweb": ("OneWeb / Eutelsat", (0.40, 0.55), (50.0, 80.0), (2.0, 3.0)),
+    "iridium-NEXT": ("Iridium Communications", (0.55, 0.75), (40.0, 70.0), (1.5, 2.5)),
+    "stations": ("Station programme operator", (0.60, 0.85), (25.0, 55.0), (1.5, 2.5)),
+}
+# 'active' group: operator guessed from the real satellite name; anything else gets a neutral profile.
+_NAME_OPERATORS: tuple[tuple[str, str], ...] = (
+    ("KUIPER", "Amazon Kuiper"), ("QIANFAN", "Qianfan (SSST)"), ("GLOBALSTAR", "Globalstar"),
+    ("FLOCK", "Planet Labs"), ("LEMUR", "Spire Global"), ("CAPELLA", "Capella Space"),
+    ("ORBCOMM", "ORBCOMM"), ("NOAA", "NOAA"), ("IRIDIUM", "Iridium Communications"),
+    ("STARLINK", "SpaceX Starlink"), ("ONEWEB", "OneWeb / Eutelsat"),
+)
+_DEFAULT_PROFILE = ("Commercial operator", (0.35, 0.60), (20.0, 70.0), (1.5, 3.5))
+
+
+def _unit(norad_id: str, field: str) -> float:
+    """Deterministic value in [0, 1): sha256, so it is identical across processes and machines."""
+    digest = hashlib.sha256(f"{norad_id}|{field}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") / 2**64
+
+
+def _pool_profile(norad_id: str, name: str, group: str) -> tuple[str, float, float, float]:
+    """(operator, mvi, fuel_margin_pct, delta_v_mps) for a pool object, stable across processes."""
+    op, mvi_r, fuel_r, dv_r = _GROUP_PROFILES.get(group, _DEFAULT_PROFILE)
+    if group not in _GROUP_PROFILES:
+        upper = name.upper()
+        op = next((label for prefix, label in _NAME_OPERATORS if upper.startswith(prefix)), op)
+    pick = lambda r, f: r[0] + (r[1] - r[0]) * _unit(norad_id, f)  # noqa: E731
+    return op, round(pick(mvi_r, "mvi"), 2), round(pick(fuel_r, "fuel"), 1), round(pick(dv_r, "dv"), 1)
+
+
 def resolve_operator_profile(
     norad_id: str,
     satellite_name: str = "",
@@ -166,6 +265,8 @@ def resolve_operator_profile(
     """Resolves or constructs an OperatorProfile for any satellite."""
     if norad_id in KNOWN_OPERATOR_PROFILES:
         op_name, mvi, fuel_pct, dv_mps = KNOWN_OPERATOR_PROFILES[norad_id]
+    elif norad_id in _pool_groups:
+        op_name, mvi, fuel_pct, dv_mps = _pool_profile(norad_id, satellite_name, _pool_groups[norad_id])
     else:
         op_name = f"Operator-{norad_id}"
         num_id = _stable_id_number(norad_id)

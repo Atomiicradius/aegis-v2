@@ -63,7 +63,7 @@ def test_priority(q: Queue) -> None:
     for policy in ("priority", "fifo"):
         workers = reset(q)
         jobs = enqueue_batch(q, 100, policy, critical=1, critical_after=100, seed=22)
-        crit = next(j for j in jobs if j.is_critical)
+        crit = jobs[-1]  # the injected critical job (normal pool events can also reach risk >= 0.8)
         ok = wait_done(q, jobs)
         ranks[policy] = start_rank(q, jobs, crit.event_id) if ok else -1
         print(f"      {policy}: critical job (enqueued last) started #{ranks[policy]} of 101 "

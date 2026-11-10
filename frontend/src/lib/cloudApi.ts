@@ -30,6 +30,9 @@ export type CloudStats = {
   llm_mode: string;
   stub_ms: number;
   server_time: string;
+  /** real satellites the storm draws from; absent on an older API */
+  pool_size?: number;
+  pool_groups?: Record<string, number>;
 };
 
 export type StormPolicy = 'fifo' | 'priority';

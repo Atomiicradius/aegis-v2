@@ -60,6 +60,8 @@ function build(s: Shape): CloudStats {
     policy: s.policy ?? 'priority',
     llm_mode: 'stub',
     stub_ms: 150,
+    pool_size: 400,
+    pool_groups: { starlink: 105, oneweb: 105, active: 104, 'iridium-NEXT': 80, stations: 6 },
     server_time: new Date().toISOString(),
   };
 }

@@ -1,6 +1,9 @@
 x-aegis-env: &aegis-env
   REDIS_URL: redis://redis:6379
   OFFLINE: "1"
+  EVENT_POOL: ${EVENT_POOL:-pool}
+  VALIDATION_SET: ${VALIDATION_SET:-bounded}
+  VALIDATION_K: ${VALIDATION_K:-50}
   LLM_MODE: stub
   LLM_STUB_MS: ${LLM_STUB_MS:-150}
   LEASE_SECONDS: ${LEASE_SECONDS:-30}

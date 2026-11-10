@@ -1,0 +1,5 @@
+workers,workers_live,workers_seen,policy,events,critical,stub_ms,seed,wall_s,throughput_jobs_s,avg_ms,p95_ms,p99_ms,crit_avg_ms,crit_max_ms,errors,retries_total,failed,mean_rounds
+1,1,1,fifo,200,3,150,42,65.98,3.08,32829,61752,64334,46178,46505,0,0,0,1
+1,1,1,priority,200,3,150,42,66.08,3.07,32918,62811,65424,895,1217,0,0,0,1
+4,4,4,fifo,200,3,150,42,16.54,12.27,8340,15568,16216,11636,11637,0,0,0,1
+4,4,4,priority,200,3,150,42,16.46,12.33,8303,15818,16458,618,619,0,0,0,1

@@ -8,6 +8,7 @@ queue worker later just calls process_job() per message.
 from __future__ import annotations
 
 import math
+import os
 import time
 import uuid
 from datetime import datetime, timezone
@@ -16,7 +17,7 @@ from pydantic import BaseModel, model_validator
 
 from backend.app.agents.negotiator import NegotiationEngine
 from backend.app.agents.operator_agent import LLM_COUNTERS, get_llm_mode
-from backend.app.profiles import load_all_tracked_objects, resolve_operator_profile
+from backend.app.profiles import curated_ids, load_all_tracked_objects, resolve_operator_profile
 from backend.app.schemas.conjunction import ConjunctionAlert, ConjunctionStatus
 from backend.app.schemas.negotiation import AgentId
 
@@ -51,6 +52,57 @@ class Job(BaseModel):
         if not self.enqueued_at:
             self.enqueued_at = _now_iso()
         return self
+
+
+_NEIGHBORS: dict[str, list[str]] = {}   # norad_id -> other ids, most similar orbit first (per process)
+
+
+def _orbit(obj) -> tuple[float, float]:
+    """(inclination deg, mean motion rev/day) straight from TLE line 2."""
+    return float(obj.tle_line2[8:16]), float(obj.tle_line2[52:63])
+
+
+def _nearest_orbit_ids(norad_id: str, objects: list) -> list[str]:
+    """Other objects ordered by orbit similarity (mean motion ~ altitude, then inclination); cached."""
+    hit = _NEIGHBORS.get(norad_id)
+    if hit is None:
+        me = next(o for o in objects if o.norad_id == norad_id)
+        inc, mm = _orbit(me)
+
+        def gap(o) -> float:
+            i, m = _orbit(o)
+            return abs(m - mm) / 0.1 + abs(i - inc) / 1.0
+
+        hit = [o.norad_id for o in sorted((o for o in objects if o.norad_id != norad_id), key=gap)]
+        _NEIGHBORS[norad_id] = hit
+    return hit
+
+
+def validation_objects(all_objects: list, sat_a, sat_b) -> list:
+    """The objects the safety validation screens the maneuver against (VALIDATION_SET, read per call).
+
+    full     every loaded object (pool + curated)
+    curated  the curated snapshot + the pair
+    bounded  curated + the pair + the VALIDATION_K (default 50) nearest-orbit objects to the pair (K total)
+    """
+    mode = os.environ.get("VALIDATION_SET", "bounded").strip().lower()
+    if mode == "full":
+        return all_objects
+    if mode not in ("curated", "bounded"):
+        raise ValueError(f"VALIDATION_SET must be full|curated|bounded; got {mode!r}")
+    keep = set(curated_ids()) | {sat_a.norad_id, sat_b.norad_id}
+    if mode == "bounded":
+        k = int(os.environ.get("VALIDATION_K", "50"))
+        near = [_nearest_orbit_ids(sat.norad_id, all_objects) for sat in (sat_a, sat_b)]
+        picked: list[str] = []
+        for pair in zip(*near):          # alternate a / b: K distinct neighbours in total, not per satellite
+            for nid in pair:
+                if nid not in keep and nid not in picked:
+                    picked.append(nid)
+            if len(picked) >= k:
+                break
+        keep.update(picked[:k])
+    return [o for o in all_objects if o.norad_id in keep]
 
 
 def process_job(job: Job | dict, *, force_rejection: bool = False) -> dict:
@@ -88,7 +140,8 @@ def process_job(job: Job | dict, *, force_rejection: bool = False) -> dict:
     profile_a = resolve_operator_profile(sat_a.norad_id, sat_a.name, AgentId.OPERATOR_A)
     profile_b = resolve_operator_profile(sat_b.norad_id, sat_b.name, AgentId.OPERATOR_B)
 
-    engine = NegotiationEngine(alert, profile_a, profile_b, sat_a, sat_b, all_objects)
+    engine = NegotiationEngine(alert, profile_a, profile_b, sat_a, sat_b,
+                               validation_objects(all_objects, sat_a, sat_b))
     transcript, resolution = engine.run_negotiation(force_initial_rejection=force_rejection)
 
     return {

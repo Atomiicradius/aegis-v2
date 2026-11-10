@@ -46,7 +46,17 @@ One job at a time per process (needed for `fallbacks_used`). Heartbeat in a daem
 Live worker = heartbeat < 10 s old; dead = registered but silent >= 10 s.
 
 ## API + dashboard (`backend/cloud/api.py`, compose service `api`, http://localhost:8010)
-`GET /` dashboard; `GET /api/cloud/stats` (fixed key contract); `POST /api/cloud/storm {n,critical,critical_after_s,policy}`, `/critical {k}`, `/reset` (FLUSHDB). Details and demo flow: DEMO.md.
+`GET /` dashboard; `GET /api/cloud/stats` (fixed key contract; **added** `pool_size` (int) and `pool_groups` ({group: count}) - existing keys unchanged); `POST /api/cloud/storm {n,critical,critical_after_s,policy}`, `/critical {k}`, `/reset` (FLUSHDB). Details and demo flow: DEMO.md.
+
+## Satellite pool (EVENT_POOL=pool)
+**Real satellites, real orbits, synthetic close approaches.** The storm picks random pairs from ~400 real LEO satellites
+(CelesTrak TLEs, fetched once by `fetch_tle_pool.py`, groups: starlink, oneweb, iridium-NEXT, stations, a general `active` subset);
+the miss distance and time to closest approach of each event are invented. Nothing here is a real conjunction.
+- Pool file `backend/app/data/cache/tle_pool.json` (~140 KB, committed with `git add -f`): `{groups: {norad: group}, objects: [RawTLE...]}`. Workers never touch the network.
+- The old Monitor/globe and its curated set are unchanged (`profiles.py` is cloud-only).
+- Derived operator profiles per constellation (`profiles._GROUP_PROFILES`, hashlib-stable): Starlink low MVI / big fuel / dv 3-4, OneWeb mid, Iridium higher MVI, stations high MVI. `KNOWN_OPERATOR_PROFILES` untouched. Transcripts use the real TLE names (`ONEWEB-0149`, ...). The profile numbers are illustrative, not operator data.
+- **Validation cost** (`process_job`, LLM_MODE=off, 50 seeded jobs, mean ms): full-pool validation grows with the pool (15 objects 3.1, 100: 19.8, 250: 49.0, 400: **79.6**); curated+pair is flat 3.5 but ignores the pool; `bounded` (curated + pair + 50 nearest-orbit objects, mean motion then inclination) is **13.9 ms / p95 14.6** at 400. Default = `bounded`. Trade-off: a maneuver is screened against the 15 curated objects + 50 orbit neighbours, not all 400 (the far ones cannot reach the pair's orbit anyway).
+- Old API without the pool keys, or no pool file: `/cloud` shows `objects / --` or 006.
 
 ## Env vars
 | var | default | used by |
@@ -60,10 +70,16 @@ Live worker = heartbeat < 10 s old; dead = registered but silent >= 10 s.
 | `POLICY` | `fifo` | default for `--policy` in enqueue/storm |
 | `AGING_PER_SEC` | `0.002` | priority score |
 | `CRITICAL_THRESHOLD` | `0.8` | `is_critical` |
+| `EVENT_POOL` | code `curated`; image/compose `pool` | `pool` = ~400 real LEO satellites from `tle_pool.json`; `curated` = the 15-object snapshot (6 usable). Missing pool file -> loud warning + curated |
+| `VALIDATION_SET` | `bounded` | which objects the safety validation screens against: `full` \| `curated` \| `bounded` |
+| `VALIDATION_K` | `50` | `bounded`: nearest-orbit objects added to curated + the pair |
 
 ## Scripts (`docker compose run --rm worker python scripts/<x>.py ...` unless HOST)
 | script | does |
 |---|---|
+| `fetch_tle_pool.py [--max 400]` (HOST, network) | CelesTrak stations/iridium-NEXT/oneweb/starlink/active -> LEO + fresh (<=14 d) + not docked + de-duplicated, <=40% per group -> `tle_pool.json` (`git add -f`) |
+| `measure_pool.py` | process_job ms vs pool size and validation set (LLM_MODE=off) |
+| `regression.py` (HOST) | reset, 300-event priority storm + 3 critical, PASS/FAIL checks, exit 1 on failure (**FLUSHES Redis**) |
 | `fetch_tles.py` (HOST) | fetch CelesTrak once -> `backend/app/data/cache/tle_snapshot.json` (tracked in git) |
 | `smoke.py` | 10 synthetic jobs through `process_job`, no Redis |
 | `enqueue.py --n N --policy P [--critical K --critical-after M] [--seed S]` | enqueue N normal (+K critical after M) |
@@ -96,5 +112,5 @@ docker compose down
 - A job longer than `LEASE_SECONDS` is requeued while still running (duplicate work, first result kept). Real-LLM jobs need a bigger lease.
 - Redis has no persistence volume; restarting it loses the queue.
 - Stub-mode throughput scales ~linearly because the stub sleeps; real negotiation CPU is ~2 ms/job.
-- Only 6 non-docked objects exist in the snapshot (1 in the fixture, where `random_job` raises). With docked objects excluded every synthetic job approves in round 1.
+- With `EVENT_POOL=curated` only 6 non-docked objects exist in the snapshot (1 in the fixture, where `random_job` raises). Pool mode has ~400. With docked objects excluded every synthetic job approves in round 1.
 - `scoring.py`/`risk.py` deliberately avoid importing `redis`, so their unit tests run on the host (redis is only installed in the image).

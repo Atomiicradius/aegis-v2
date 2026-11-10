@@ -102,6 +102,8 @@ Built in `frontend/src/pages/History.tsx` — archive briefing + derived record 
 ### Cloud Page (/cloud)
 *(ground-station control room for the Redis queue + worker cluster)*
 
+Header strip also shows `objects / NNN` (zero-padded `pool_size` from the stats API; `--` when absent). The scope callout and footer state: real satellites and orbits, synthetic close approaches.
+
 Files: `frontend/src/pages/Cloud.tsx`, `frontend/src/components/cloud/*`, `frontend/src/lib/{cloudApi,cloudMock,useCloudStats}.ts`
 Last updated: 2026-11-10
 

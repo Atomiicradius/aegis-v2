@@ -4,6 +4,8 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/repo:/repo/backend \
     OFFLINE=1 \
+    EVENT_POOL=pool \
+    VALIDATION_SET=bounded \
     LLM_MODE=stub
 
 WORKDIR /repo

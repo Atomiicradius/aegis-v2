@@ -93,6 +93,9 @@ export default function Cloud() {
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 font-mono text-[14px] uppercase tracking-[0.14em]">
             <span className="text-text-muted">policy / <span className="text-text-primary">{s?.policy ?? DASH}</span></span>
             <span className="border-l border-border pl-4 text-text-muted">
+              objects / <span className="text-text-primary">{s?.pool_size != null ? String(s.pool_size).padStart(3, '0') : DASH}</span>
+            </span>
+            <span className="border-l border-border pl-4 text-text-muted">
               llm / <span className="text-text-primary">{s ? `${s.llm_mode}${s.llm_mode === 'stub' ? ` ${s.stub_ms} ms` : ''}` : DASH}</span>
             </span>
             <span className="border-l border-border pl-4">
@@ -259,7 +262,7 @@ export default function Cloud() {
                 Redis queue, leases, reaper, priority scheduler, worker processes and the SGP4 + deterministic negotiation are the real code.
               </LeftRuleCallout>
               <LeftRuleCallout tone="accent" label="Simulated load">
-                Conjunction events are synthetic, and LLM latency is a {s ? `${s.stub_ms} ms` : 'fixed'} sleep, not an API call.
+                The satellites and their orbits are real (CelesTrak TLEs); the close approaches are synthetic, invented for load. LLM latency is a {s ? `${s.stub_ms} ms` : 'fixed'} sleep, not an API call.
               </LeftRuleCallout>
               <div className="border border-warning/25 border-l-2 border-l-warning bg-warning-muted/15 px-5 py-4">
                 <p className="font-mono text-[14px] uppercase tracking-[0.18em] text-warning-light">Scope declaration</p>
@@ -272,7 +275,7 @@ export default function Cloud() {
         </div>
 
         <footer className="mt-5 flex flex-col gap-2 border-t border-border py-5 font-mono text-[14px] uppercase tracking-[0.14em] text-text-muted sm:flex-row sm:items-center sm:justify-between">
-          <span>synthetic events / simulated llm latency</span>
+          <span>real orbits / synthetic close approaches / simulated llm latency</span>
           <span>single-host compose cluster</span>
         </footer>
       </div>
