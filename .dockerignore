@@ -1,0 +1,20 @@
+.git
+.github
+.agents
+node_modules
+frontend
+docs
+context
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.env*
+*.db
+
+# Original-app pieces the cloud worker must not depend on
+backend/app/main.py
+backend/app/orchestrator
+backend/app/storage
+backend/app/data/trajectory.py
+backend/app/data/test_trajectory.py
+backend/scripts

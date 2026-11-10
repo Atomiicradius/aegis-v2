@@ -6,3 +6,4 @@ anthropic
 httpx
 websockets
 pytest
+redis

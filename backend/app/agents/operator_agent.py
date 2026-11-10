@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import TypedDict
 
 import anthropic
@@ -124,6 +125,27 @@ def _build_fallback(state: AgentState, yield_score: float) -> str:
 
 
 # ---------------------------------------------------------------------------
+# LLM_MODE switch (cloud benchmark path): off | stub | real (default: real)
+#   off  -> template fallback immediately
+#   stub -> sleep LLM_STUB_MS (default 50) then template fallback
+#   real -> Anthropic call (original behaviour)
+# Per-mode counters so results can report which path actually ran. "fallbacks"
+# counts template use, so in off/stub modes fallbacks == calls.
+# ---------------------------------------------------------------------------
+
+LLM_COUNTERS: dict[str, dict[str, int]] = {
+    m: {"calls": 0, "real_successes": 0, "fallbacks": 0} for m in ("off", "stub", "real")
+}
+
+
+def get_llm_mode() -> str:
+    mode = os.environ.get("LLM_MODE", "real").strip().lower()
+    if mode not in LLM_COUNTERS:
+        raise ValueError(f"LLM_MODE must be off|stub|real; got {mode!r}")
+    return mode
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -170,6 +192,18 @@ def get_agent_justification(
     if isinstance(agent_state, dict):
         agent_state = AgentState(**agent_state)
 
+    mode = get_llm_mode()
+    counters = LLM_COUNTERS[mode]
+    counters["calls"] += 1
+
+    if mode == "off":
+        counters["fallbacks"] += 1
+        return _build_fallback(agent_state, yield_score)
+    if mode == "stub":
+        time.sleep(float(os.environ.get("LLM_STUB_MS", "50")) / 1000.0)
+        counters["fallbacks"] += 1
+        return _build_fallback(agent_state, yield_score)
+
     client = _client or anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
     prompt = _build_prompt(agent_state, yield_score)
@@ -194,6 +228,7 @@ def get_agent_justification(
                 agent_state.round_number,
                 len(text),
             )
+            counters["real_successes"] += 1
             return text
 
         except Exception as exc:  # noqa: BLE001
@@ -210,6 +245,7 @@ def get_agent_justification(
                     exc,
                 )
 
+    counters["fallbacks"] += 1
     fallback = _build_fallback(agent_state, yield_score)
     logger.info(
         "[operator_agent] %s returning template fallback for round %d",
