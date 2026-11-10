@@ -1,0 +1,55 @@
+09:35:23 autoscaler: min=2 max=8 target=25/worker interval=2.0s cooldown=10.0s
+09:35:25 depth=0 processing=0 workers 2 -> 2  hold
+09:35:29 depth=392 processing=2 workers 2 -> 8  SCALE UP -> 8
+09:35:30 depth=770 processing=4 workers 8 -> 8  hold
+09:35:32 depth=732 processing=8 workers 8 -> 8  hold
+09:35:34 depth=678 processing=8 workers 8 -> 8  hold
+09:35:36 depth=628 processing=8 workers 8 -> 8  hold
+09:35:38 depth=574 processing=8 workers 8 -> 8  hold
+09:35:40 depth=522 processing=8 workers 8 -> 8  hold
+09:35:42 depth=470 processing=8 workers 8 -> 8  hold
+09:35:44 depth=418 processing=8 workers 8 -> 8  hold
+09:35:46 depth=366 processing=8 workers 8 -> 8  hold
+09:35:48 depth=314 processing=8 workers 8 -> 8  hold
+09:35:50 depth=262 processing=8 workers 8 -> 8  hold
+09:35:52 depth=210 processing=8 workers 8 -> 8  hold
+09:35:54 depth=158 processing=8 workers 8 -> 7  hold (below for 0/10s, floor 8)
+09:35:56 depth=106 processing=8 workers 8 -> 5  hold (below for 2/10s, floor 8)
+09:35:58 depth=54 processing=8 workers 8 -> 3  hold (below for 4/10s, floor 8)
+09:36:00 depth=2 processing=0 workers 8 -> 2  hold (below for 6/10s, floor 2)
+09:36:02 depth=0 processing=0 workers 8 -> 2  hold (below for 8/10s, floor 2)
+09:36:04 depth=0 processing=0 workers 8 -> 2  hold (below for 10/10s, floor 2)
+09:36:07 depth=0 processing=0 workers 8 -> 2  SCALE DOWN -> 7 (low for 12s)
+09:36:08 depth=0 processing=0 workers 7 -> 2  hold (below for 0/10s, floor 2)
+09:36:10 depth=0 processing=0 workers 7 -> 2  hold (below for 2/10s, floor 2)
+09:36:12 depth=0 processing=0 workers 7 -> 2  hold (below for 4/10s, floor 2)
+09:36:14 depth=0 processing=0 workers 7 -> 2  hold (below for 6/10s, floor 2)
+09:36:16 depth=0 processing=0 workers 7 -> 2  hold (below for 8/10s, floor 2)
+09:36:18 depth=0 processing=0 workers 7 -> 2  hold (below for 10/10s, floor 2)
+09:36:21 depth=0 processing=0 workers 7 -> 2  SCALE DOWN -> 6 (low for 12s)
+09:36:23 depth=0 processing=0 workers 6 -> 2  hold (below for 0/10s, floor 2)
+09:36:25 depth=0 processing=0 workers 6 -> 2  hold (below for 2/10s, floor 2)
+09:36:27 depth=0 processing=0 workers 6 -> 2  hold (below for 4/10s, floor 2)
+09:36:29 depth=0 processing=0 workers 6 -> 2  hold (below for 6/10s, floor 2)
+09:36:31 depth=0 processing=0 workers 6 -> 2  hold (below for 8/10s, floor 2)
+09:36:34 depth=0 processing=0 workers 6 -> 2  SCALE DOWN -> 5 (low for 10s)
+09:36:35 depth=0 processing=0 workers 5 -> 2  hold (below for 0/10s, floor 2)
+09:36:37 depth=0 processing=0 workers 5 -> 2  hold (below for 2/10s, floor 2)
+09:36:39 depth=0 processing=0 workers 5 -> 2  hold (below for 4/10s, floor 2)
+09:36:41 depth=0 processing=0 workers 5 -> 2  hold (below for 6/10s, floor 2)
+09:36:43 depth=0 processing=0 workers 5 -> 2  hold (below for 8/10s, floor 2)
+09:36:45 depth=0 processing=0 workers 5 -> 2  hold (below for 10/10s, floor 2)
+09:36:48 depth=0 processing=0 workers 5 -> 2  SCALE DOWN -> 4 (low for 12s)
+09:36:49 depth=0 processing=0 workers 4 -> 2  hold (below for 0/10s, floor 2)
+09:36:51 depth=0 processing=0 workers 4 -> 2  hold (below for 2/10s, floor 2)
+09:36:53 depth=0 processing=0 workers 4 -> 2  hold (below for 4/10s, floor 2)
+09:36:55 depth=0 processing=0 workers 4 -> 2  hold (below for 6/10s, floor 2)
+09:36:57 depth=0 processing=0 workers 4 -> 2  hold (below for 8/10s, floor 2)
+09:37:00 depth=0 processing=0 workers 4 -> 2  SCALE DOWN -> 3 (low for 10s)
+09:37:02 depth=0 processing=0 workers 3 -> 2  hold (below for 0/10s, floor 2)
+09:37:04 depth=0 processing=0 workers 3 -> 2  hold (below for 2/10s, floor 2)
+09:37:06 depth=0 processing=0 workers 3 -> 2  hold (below for 4/10s, floor 2)
+09:37:08 depth=0 processing=0 workers 3 -> 2  hold (below for 6/10s, floor 2)
+09:37:10 depth=0 processing=0 workers 3 -> 2  hold (below for 8/10s, floor 2)
+09:37:13 depth=0 processing=0 workers 3 -> 2  SCALE DOWN -> 2 (low for 10s)
+09:37:14 depth=0 processing=0 workers 2 -> 2  hold
