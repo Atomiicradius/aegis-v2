@@ -9,6 +9,8 @@ Redis keys (all prefixed with `ns`, default ""):
   result:<id>      JSON result; written once (SET NX) -> completion is idempotent
   retries:<id>     INT   how many times a lease on this job expired
   counters         HASH  completed / failed / retries_total
+  recent           LIST  last 1000 completed ids, newest first (stats API)
+  worker_done      HASH  worker_id -> jobs completed
   workers          HASH  worker_id -> last heartbeat (unix seconds)
 
 Why Lua: a Redis script runs atomically, so "take a job AND take its lease" can
@@ -47,14 +49,17 @@ end
 
 # complete: first writer wins. NX makes a duplicate completion a no-op.
 _COMPLETE_LUA = """
--- KEYS: result, processing, owner, jobs, counters
--- ARGV: result_json, id, counter_field
+-- KEYS: result, processing, owner, jobs, counters, recent, worker_done
+-- ARGV: result_json, id, counter_field, worker_id
 local first = redis.call('SET', KEYS[1], ARGV[1], 'NX')
 redis.call('HDEL', KEYS[2], ARGV[2])      -- release the lease either way
 redis.call('HDEL', KEYS[3], ARGV[2])
 redis.call('ZREM', KEYS[4], ARGV[2])      -- drop any requeued duplicate still waiting
 if first then
   redis.call('HINCRBY', KEYS[5], ARGV[3], 1)
+  redis.call('LPUSH', KEYS[6], ARGV[2])   -- `recent`: newest finished ids, for the stats API
+  redis.call('LTRIM', KEYS[6], 0, 999)
+  if ARGV[4] ~= '' then redis.call('HINCRBY', KEYS[7], ARGV[4], 1) end   -- jobs done per worker
   return 1
 end
 return 0
@@ -166,8 +171,10 @@ class Queue:
     def complete(self, job_id: str, result: dict) -> bool:
         """True if this call stored the result; False if one already existed (kept)."""
         field = "failed" if result.get("resolution_status") == "failed" else "completed"
-        keys = [self.k(n) for n in ("result:" + job_id, "processing", "owner", "jobs", "counters")]
-        return bool(self._complete(keys=keys, args=[json.dumps(result), job_id, field]))
+        keys = [self.k(n) for n in ("result:" + job_id, "processing", "owner", "jobs", "counters",
+                                    "recent", "worker_done")]
+        return bool(self._complete(keys=keys, args=[json.dumps(result), job_id, field,
+                                                    result.get("worker_id", "")]))
 
     def reap(self) -> tuple[int, int]:
         """Requeue (or fail) expired leases. Returns (requeued, failed)."""

@@ -26,6 +26,7 @@ def enqueue_batch(q: Queue, n: int, policy: str, critical: int = 0,
         is_crit = after <= i < after + critical
         jobs.append(make_critical_job(rng, objects) if is_crit else random_job(rng, objects))
     q.submit(jobs, policy)
+    q.r.set(q.k("meta:policy"), policy)  # shown on the dashboard
     return jobs
 
 

@@ -1,3 +1,14 @@
+x-aegis-env: &aegis-env
+  REDIS_URL: redis://redis:6379
+  OFFLINE: "1"
+  LLM_MODE: stub
+  LLM_STUB_MS: ${LLM_STUB_MS:-150}
+  LEASE_SECONDS: ${LEASE_SECONDS:-30}
+  MAX_RETRIES: ${MAX_RETRIES:-3}
+  AGING_PER_SEC: ${AGING_PER_SEC:-0.002}
+  CRITICAL_THRESHOLD: ${CRITICAL_THRESHOLD:-0.8}
+  POLICY: ${POLICY:-fifo}
+
 services:
   redis:
     image: redis:7-alpine
@@ -10,13 +21,13 @@ services:
     command: python -m backend.cloud.worker
     depends_on:
       - redis
-    environment:
-      REDIS_URL: redis://redis:6379
-      OFFLINE: "1"
-      LLM_MODE: stub
-      LLM_STUB_MS: ${LLM_STUB_MS:-150}
-      LEASE_SECONDS: ${LEASE_SECONDS:-30}
-      MAX_RETRIES: ${MAX_RETRIES:-3}
-      AGING_PER_SEC: ${AGING_PER_SEC:-0.002}
-      CRITICAL_THRESHOLD: ${CRITICAL_THRESHOLD:-0.8}
-      POLICY: ${POLICY:-fifo}
+    environment: *aegis-env
+
+  api:
+    image: aegis-v2
+    command: uvicorn backend.cloud.api:app --host 0.0.0.0 --port 8000
+    depends_on:
+      - redis
+    ports:
+      - "8000:8000"
+    environment: *aegis-env

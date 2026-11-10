@@ -32,6 +32,7 @@ a = ap.parse_args()
 
 q = Queue()
 q.r.flushdb()
+q.r.set(q.k("meta:policy"), a.policy)
 time.sleep(3)  # heartbeat threads re-register after the flush
 live = wait_for_workers(q, a.workers_expected)
 if live < a.workers_expected:

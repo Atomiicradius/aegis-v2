@@ -37,6 +37,7 @@ if a.reset:
     q.r.flushdb()
     time.sleep(3)  # worker heartbeat threads re-register within 2 s of the flush
 
+q.r.set(q.k("meta:policy"), a.policy)  # shown on the dashboard
 rng = random.Random(a.seed)
 objects = load_all_tracked_objects()
 normals = [random_job(rng, objects) for _ in range(a.n)]
