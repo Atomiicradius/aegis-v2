@@ -14,6 +14,9 @@ workers pull jobs from Redis and call it. Commands are PowerShell, run from the 
 | `retries:<id>` | string int | expired-lease count for the job |
 | `counters` | hash | `completed`, `failed`, `retries_total` |
 | `workers` | hash | worker_id -> last heartbeat (unix s) |
+| `recent` | list | last 1000 completed ids, newest first (stats API window) |
+| `worker_done` | hash | worker_id -> jobs completed |
+| `meta:policy` | string | policy used by the last enqueue/storm (dashboard) |
 
 `<id>` = `event_id` = uuid5(sorted pair + `tca_utc`), so the same encounter always has the same id.
 
@@ -41,6 +44,9 @@ For synthetic events "now" is the newest TLE epoch; `hours_to_tca` is the genera
 ## Worker (`python -m backend.cloud.worker`)
 One job at a time per process (needed for `fallbacks_used`). Heartbeat in a daemon thread every 2 s; reaper every 5 s (between jobs); idle sleep 20 ms. SIGTERM: finish current job, deregister, exit. `worker_id` = hostname. A job that raises is recorded as `error` and still completed.
 Live worker = heartbeat < 10 s old; dead = registered but silent >= 10 s.
+
+## API + dashboard (`backend/cloud/api.py`, compose service `api`, http://localhost:8000)
+`GET /` dashboard; `GET /api/cloud/stats` (fixed key contract); `POST /api/cloud/storm {n,critical,critical_after_s,policy}`, `/critical {k}`, `/reset` (FLUSHDB). Details and demo flow: DEMO.md.
 
 ## Env vars
 | var | default | used by |
@@ -70,6 +76,8 @@ Live worker = heartbeat < 10 s old; dead = registered but silent >= 10 s.
 | `benchmark.py [--quick]` (HOST) | sweep workers x policy -> `results/benchmark.csv` (overwrites unless `--append`) |
 | `plot_results.py` (HOST) | CSV -> `results/*.png` (needs matplotlib) |
 | `crash_test.md` | manual `docker kill` test |
+| `check_stats.py [--storm N]` (HOST) | poll `/api/cloud/stats` each second and print it |
+| `autoscaler.py` (HOST) | scale `worker` 2..8 by queue depth (up fast, down 1 step per cooldown) |
 
 ```powershell
 docker compose build worker                          # REQUIRED after editing backend/ or scripts/ (baked into the image)

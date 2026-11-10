@@ -53,3 +53,47 @@
 09:37:10 depth=0 processing=0 workers 3 -> 2  hold (below for 8/10s, floor 2)
 09:37:13 depth=0 processing=0 workers 3 -> 2  SCALE DOWN -> 2 (low for 10s)
 09:37:14 depth=0 processing=0 workers 2 -> 2  hold
+09:37:16 depth=0 processing=0 workers 2 -> 2  hold
+09:37:18 depth=0 processing=0 workers 2 -> 2  hold
+09:37:20 depth=0 processing=0 workers 2 -> 2  hold
+09:37:22 depth=0 processing=0 workers 2 -> 2  hold
+09:37:24 depth=0 processing=0 workers 2 -> 2  hold
+09:37:26 depth=0 processing=0 workers 2 -> 2  hold
+09:37:28 depth=0 processing=0 workers 2 -> 2  hold
+09:37:30 depth=0 processing=0 workers 2 -> 2  hold
+09:37:32 depth=0 processing=0 workers 2 -> 2  hold
+09:37:34 depth=0 processing=0 workers 2 -> 2  hold
+09:37:36 depth=0 processing=0 workers 2 -> 2  hold
+09:37:38 depth=0 processing=0 workers 2 -> 2  hold
+09:37:40 depth=0 processing=0 workers 2 -> 2  hold
+09:37:42 depth=0 processing=0 workers 2 -> 2  hold
+09:37:44 depth=0 processing=0 workers 3 -> 2  hold (below for 0/10s, floor 2)
+09:37:46 depth=0 processing=0 workers 2 -> 2  hold
+09:37:48 depth=0 processing=0 workers 2 -> 2  hold
+09:37:50 depth=0 processing=0 workers 2 -> 2  hold
+09:37:52 depth=0 processing=0 workers 2 -> 2  hold
+09:37:54 depth=0 processing=0 workers 2 -> 2  hold
+09:37:57 depth=472 processing=2 workers 2 -> 8  SCALE UP -> 8
+09:37:59 depth=776 processing=3 workers 8 -> 8  hold
+09:38:00 depth=742 processing=8 workers 8 -> 8  hold
+09:38:02 depth=689 processing=8 workers 8 -> 8  hold
+09:38:04 depth=638 processing=8 workers 8 -> 8  hold
+09:38:06 depth=588 processing=8 workers 8 -> 8  hold
+09:38:09 depth=536 processing=8 workers 7 -> 8  SCALE UP -> 8
+09:38:10 depth=488 processing=8 workers 8 -> 8  hold
+09:38:12 depth=441 processing=9 workers 8 -> 8  hold
+09:38:14 depth=387 processing=9 workers 8 -> 8  hold
+09:38:16 depth=337 processing=9 workers 8 -> 8  hold
+09:38:18 depth=283 processing=9 workers 8 -> 8  hold
+09:38:20 depth=233 processing=9 workers 8 -> 8  hold
+09:38:22 depth=179 processing=9 workers 8 -> 8  hold
+09:38:25 depth=129 processing=9 workers 8 -> 6  hold (below for 0/10s, floor 9)
+09:38:26 depth=75 processing=9 workers 8 -> 4  hold (below for 2/10s, floor 9)
+09:38:28 depth=25 processing=9 workers 8 -> 2  hold (below for 4/10s, floor 9)
+09:38:30 depth=0 processing=1 workers 8 -> 2  hold (below for 6/10s, floor 2)
+09:38:32 depth=0 processing=1 workers 8 -> 2  hold (below for 8/10s, floor 2)
+09:38:34 depth=0 processing=1 workers 8 -> 2  hold (below for 10/10s, floor 2)
+09:38:37 depth=0 processing=1 workers 8 -> 2  SCALE DOWN -> 7 (low for 12s)
+09:38:39 depth=0 processing=1 workers 7 -> 2  hold (below for 0/10s, floor 2)
+09:38:41 depth=0 processing=0 workers 7 -> 2  hold (below for 2/10s, floor 2)
+09:38:43 depth=0 processing=0 workers 7 -> 2  hold (below for 4/10s, floor 2)
