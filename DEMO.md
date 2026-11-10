@@ -29,7 +29,7 @@ The plain HTML dashboard at http://localhost:8010 still works and needs none of 
 cd D:\aegis-v2
 docker info | Select-Object -First 1                       # Docker Desktop must be running
 Set-Content .env "LEASE_SECONDS=10"                        # short lease so the crash demo is fast; read by every compose call, any window
-docker compose down
+docker compose down                                        # keeps the Redis volume; add -v only to wipe it
 docker compose build                                       # only needed after code changes
 docker compose up -d redis api
 docker compose up -d --scale worker=2 worker
@@ -84,9 +84,20 @@ Get-Content results\benchmark.csv
 ```
 Say: the events use real satellites and real orbits (Starlink, OneWeb, Iridium NEXT, ... from CelesTrak) but the close approaches are invented for load - none is a real conjunction. Throughput scales ~linearly (3.2 -> 25.7 jobs/s for 1 -> 8 workers); priority costs no throughput and cuts critical latency 15-77x. Re-run: `python scripts\benchmark.py` (~7 min, FLUSHES Redis).
 
+## 7. Optional: Redis outage (rehearsed, ~45 s)
+Start a deep storm (step 2), then:
+```powershell
+docker compose stop redis      # dot goes red, /cloud shows CLUSTER LINK DOWN, workers log "redis unavailable ... retrying"
+Start-Sleep -Seconds 10
+docker compose start redis     # within ~5 s everything is back; the storm resumes and finishes
+```
+Look at: Completed still reaches the full total, Failed = 0, Retries = 1-3 (leases that expired during the outage). Nothing restarts (`docker compose ps`).
+Chaos figures for the 5 fault scenarios: `start results\chaos_recovery.png` (re-run: `python scripts\chaos.py`, ~35 min, stop the autoscaler first, FLUSHES Redis).
+
 ## Cleanup
 ```powershell
-Remove-Item .env; docker compose down
+Remove-Item .env; docker compose down        # keeps the Redis volume (queue + results survive the next `up`)
+docker compose down -v                       # ONLY if you want a completely empty Redis (deletes the volume)
 ```
 
 ## If X fails, do Y
@@ -94,7 +105,7 @@ Remove-Item .env; docker compose down
 |---|---|
 | Dashboard blank / red dot | `docker compose ps`; `docker compose logs api --tail 20`; `docker compose up -d redis api`; hard refresh (Ctrl+F5) |
 | `docker` commands hang or "cannot connect" | start Docker Desktop, wait for the whale to stop animating |
-| Redis down (API returns 503, dot red) | `docker compose up -d redis api` (queue contents are lost; re-run reset + storm) |
+| Redis down (API returns 503 `redis_unavailable`, dot red, `/cloud` shows CLUSTER LINK DOWN) | `docker compose up -d redis` - workers and API reconnect by themselves within ~5 s (backoff cap), no restart needed; the queue is kept (AOF volume). Reset before the next storm |
 | API down, Redis fine | `docker compose up -d api`; drive the demo with `docker compose run --rm worker python scripts/storm.py --n 800 --policy priority --critical 3 --critical-after 8 --watch --reset` |
 | Port 8010 (cloud API) or 8000 (old backend) in use | `netstat -ano \| findstr :8010`, `taskkill /PID <pid> /F`; or change the host side of `"8010:8000"` in docker-compose.yml (and `VITE_CLOUD_API`) |
 | Workers not scaling | autoscaler window shows `ERROR`? run `docker compose ps`; check it runs from `D:\aegis-v2`; `python scripts\autoscaler.py --dry-run` to see its decisions; set manually: `docker compose up -d --scale worker=8 worker` |

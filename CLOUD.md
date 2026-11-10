@@ -58,6 +58,34 @@ the miss distance and time to closest approach of each event are invented. Nothi
 - **Validation cost** (`process_job`, LLM_MODE=off, 50 seeded jobs, mean ms): full-pool validation grows with the pool (15 objects 3.1, 100: 19.8, 250: 49.0, 400: **79.6**); curated+pair is flat 3.5 but ignores the pool; `bounded` (curated + pair + 50 nearest-orbit objects, mean motion then inclination) is **13.9 ms / p95 14.6** at 400. Default = `bounded`. Trade-off: a maneuver is screened against the 15 curated objects + 50 orbit neighbours, not all 400 (the far ones cannot reach the pair's orbit anyway).
 - Old API without the pool keys, or no pool file: `/cloud` shows `objects / --` or 006.
 
+## Persistence and Redis outages (Task B)
+**Persistence.** Redis runs `redis-server --appendonly yes --appendfsync everysec` with its data on the named volume `redis-data`.
+- `docker compose down` (no `-v`) and `docker compose restart redis` keep the queue, results, counters and leases. `docker compose down -v` deletes the volume = empty Redis. `POST /api/cloud/reset` / `scripts/reset_redis.py` (FLUSHDB) still work (the flush is written to the AOF).
+- **`everysec` is not zero-loss.** Redis fsyncs the AOF once a second, so an *operating-system / VM / power* crash can lose up to ~1 s of acknowledged writes (up to ~2 s if the disk stalls). A graceful restart/stop loses nothing (the AOF is flushed on shutdown). A mere process kill (`docker kill` = SIGKILL of the redis process) loses essentially nothing, because what Redis already `write()`-ed is held by the OS: our hard-kill chaos runs lost 0 jobs and we could not provoke the 1 s window with them. The AOF is a consistent prefix: a Lua script (pop / complete / reap) is replayed whole or not at all.
+- What a lost second means here: **a lost enqueue = that event never runs** (nothing re-creates it; only possible while a storm is still being enqueued, ~2 s for 800 events). **A lost completion = the job is re-run** (its lease is still in the AOF, it expires, the reaper requeues it) and the first result written wins (`SET NX`), so the final counts stay right; `retries_total` shows the duplicate.
+
+**Outage tolerance** (`backend/cloud/resilience.py`). A Redis `ConnectionError` / `TimeoutError` / `BusyLoadingError` (Redis still loading its AOF) is never fatal:
+- `Backoff`: sleep 0.2 s, 0.4 s, 0.8 s ... capped at 5 s, each multiplied by a random 0.5-1.0 (jitter, so workers do not retry in lock-step). One log line when the outage starts, one when it ends.
+- **Worker**: the main loop (reap + pop) waits and resumes. A job that finishes while Redis is down keeps its result in memory; `retry(complete)` loops until it lands (never dropped, process never exits). The heartbeat thread catches every error and resumes beating. Redis clients have a 5 s socket timeout / 2 s connect timeout so a dead connection raises instead of hanging.
+- **API**: every Redis failure becomes `503 {"error": "redis_unavailable", "detail": ...}` (with CORS headers); the next request reconnects by itself. `/cloud` shows CLUSTER LINK DOWN and recovers on its own. The storm background task retries each chunk for up to 2 min.
+- **Reaper after the outage**: leases that expired while Redis was away are requeued exactly once (the reap script removes the lease in the same atomic step); a worker whose lease expired still completes first-writer-wins and removes the requeued copy.
+- Edge: if the connection dies after the pop script ran but before the worker got the reply, the job is leased to a worker that does not know it; the lease expires and the reaper requeues it (one `retries_total`, no loss).
+
+## Chaos benchmark (`scripts/chaos.py`, `scripts/plot_chaos.py`)
+4 workers, stub 150 ms, lease 10 s, priority, autoscaler OFF, killed workers are not restarted. N events (400), the fault ~6 s into the storm. Scenarios: kill 1 / 2 / 3 of 4 workers, graceful `docker compose restart redis`, hard `docker kill` of redis then `docker compose up -d redis`. Per run: jobs lost = expected - (completed + failed) (target 0), failed, retries_total (= duplicate executions), time to first retry, time to reconnect (redis scenarios: fault to the first good stats answer after a failed one), time to drain, max queue depth, anomalies. A run passes only if lost == 0 and failed == 0. Rows go to `results/chaos.csv`; `python scripts/plot_chaos.py` draws `results/chaos_recovery.png`. `--quick` = 1 run each, N=200.
+
+**Measured** (this machine, 3 runs each, 400 events, `results/chaos.csv`, `results/chaos_recovery.png`; the sweep took 15.4 min):
+
+| scenario | pass | jobs lost | failed | retries (dup. runs) | fault -> first retry | fault -> reconnect | drain median / worst |
+|---|---|---|---|---|---|---|---|
+| kill 1 of 4 | 3/3 | 0 | 0 | 1 | 13.3 s | n/a | 35.8 / 35.9 s |
+| kill 2 of 4 | 3/3 | 0 | 0 | 2 | 14.3 s | n/a | 53.3 / 53.3 s |
+| kill 3 of 4 | 3/3 | 0 | 0 | 3 | 14.4 s | n/a | 105.5 / 105.6 s |
+| redis graceful restart | 3/3 | 0 | 0 | 0 | n/a | 1.1 s | 28.7 / 31.7 s |
+| redis hard kill | 3/3 | 0 | 0 | 0 | n/a | 6.1 s | 31.7 / 31.7 s |
+
+Reading it: one retry per killed worker (its in-flight job; the lease is 10 s, the reaper runs every 5 s, hence the 12-15 s to the first retry). Drain time follows the remaining capacity (4 workers ~12 jobs/s, 3 ~9, 2 ~6, 1 ~3). Redis faults cost no work: the queue is on the AOF volume and the workers/API just wait (reconnect = 1.1 s graceful, 6.1 s hard kill, which includes the container restart and the 0.2-5 s backoff).
+
 ## Env vars
 | var | default | used by |
 |---|---|---|
@@ -80,6 +108,8 @@ the miss distance and time to closest approach of each event are invented. Nothi
 | `fetch_tle_pool.py [--max 400]` (HOST, network) | CelesTrak stations/iridium-NEXT/oneweb/starlink/active -> LEO + fresh (<=14 d) + not docked + de-duplicated, <=40% per group -> `tle_pool.json` (`git add -f`) |
 | `measure_pool.py` | process_job ms vs pool size and validation set (LLM_MODE=off) |
 | `regression.py` (HOST) | reset, 300-event priority storm + 3 critical, PASS/FAIL checks, exit 1 on failure (**FLUSHES Redis**) |
+| `chaos.py [--quick]` (HOST) | fault-injection sweep, writes `results/chaos.csv` (**FLUSHES Redis**, autoscaler must be off, ~35 min full) |
+| `plot_chaos.py` (HOST) | `results/chaos.csv` -> `results/chaos_recovery.png` (needs matplotlib) |
 | `fetch_tles.py` (HOST) | fetch CelesTrak once -> `backend/app/data/cache/tle_snapshot.json` (tracked in git) |
 | `smoke.py` | 10 synthetic jobs through `process_job`, no Redis |
 | `enqueue.py --n N --policy P [--critical K --critical-after M] [--seed S]` | enqueue N normal (+K critical after M) |
@@ -110,7 +140,7 @@ docker compose down
 - `verify_queue.py`, `bench_run.py`, `benchmark.py`, `storm.py --reset` all **FLUSHDB**.
 - Scripts and code are baked into the image: rebuild after edits.
 - A job longer than `LEASE_SECONDS` is requeued while still running (duplicate work, first result kept). Real-LLM jobs need a bigger lease.
-- Redis has no persistence volume; restarting it loses the queue.
+- Redis persists to the `redis-data` volume (AOF, everysec): `down` keeps the queue, `down -v` wipes it. Hard-crash loss <= ~1 s of writes (see Persistence). A leftover queue from an earlier session is still there after `up`: always reset before a demo.
 - Stub-mode throughput scales ~linearly because the stub sleeps; real negotiation CPU is ~2 ms/job.
 - With `EVENT_POOL=curated` only 6 non-docked objects exist in the snapshot (1 in the fixture, where `random_job` raises). Pool mode has ~400. With docked objects excluded every synthetic job approves in round 1.
 - `scoring.py`/`risk.py` deliberately avoid importing `redis`, so their unit tests run on the host (redis is only installed in the image).

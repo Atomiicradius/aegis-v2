@@ -15,6 +15,11 @@ x-aegis-env: &aegis-env
 services:
   redis:
     image: redis:7-alpine
+    # AOF persistence on a named volume: `docker compose down` keeps the queue, `down -v` wipes it.
+    # everysec = fsync once a second: a hard crash can lose up to ~1 s of writes (see CLOUD.md).
+    command: redis-server --appendonly yes --appendfsync everysec
+    volumes:
+      - redis-data:/data
     ports:
       - "6379:6379"
 
@@ -34,3 +39,6 @@ services:
     ports:
       - "8010:8000"   # host 8010: the original app backend owns :8000
     environment: *aegis-env
+
+volumes:
+  redis-data:

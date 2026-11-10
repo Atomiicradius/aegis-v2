@@ -106,8 +106,11 @@ return {requeued, failed}
 class Queue:
     def __init__(self, url: str | None = None, ns: str = "",
                  lease_seconds: float | None = None, max_retries: int | None = None) -> None:
+        # Timeouts turn a hung/dead connection into a TimeoutError/ConnectionError that the
+        # callers retry (see resilience.py); without them a half-open socket could block forever.
         self.r = redis.Redis.from_url(
-            url or os.environ.get("REDIS_URL", "redis://redis:6379"), decode_responses=True)
+            url or os.environ.get("REDIS_URL", "redis://redis:6379"), decode_responses=True,
+            socket_timeout=5, socket_connect_timeout=2)
         self.ns = ns
         self.lease_seconds = float(lease_seconds if lease_seconds is not None
                                    else os.environ.get("LEASE_SECONDS", "30"))

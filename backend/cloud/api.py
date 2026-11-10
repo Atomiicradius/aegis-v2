@@ -34,6 +34,7 @@ from redis.exceptions import RedisError
 from backend.app.profiles import load_all_tracked_objects
 from backend.cloud.events import make_critical_job, pool_summary, random_job
 from backend.cloud.queue import Queue
+from backend.cloud.resilience import retry
 
 WINDOW = 500          # results used for latency stats
 ALIVE_BELOW_S = 10.0  # heartbeat age that counts as alive
@@ -55,7 +56,9 @@ POOL = pool_summary(load_all_tracked_objects())   # loaded once at start-up (rea
 @app.exception_handler(RedisError)
 def _redis_down(request, exc):
     from fastapi.responses import JSONResponse
-    return JSONResponse({"detail": f"redis unavailable: {exc}"}, status_code=503)
+    # Any Redis failure (down, restarting, loading) -> a clean 503 the UI turns into "CLUSTER LINK DOWN".
+    # The next request reconnects by itself; nothing to restart.
+    return JSONResponse({"error": "redis_unavailable", "detail": str(exc)}, status_code=503)
 
 
 def _iso(s: str) -> datetime:
@@ -150,15 +153,20 @@ def _run_storm(req: StormReq) -> None:
         if j.event_id not in seen:
             seen.add(j.event_id)
             jobs.append(j)
-    q.r.set(q.k("meta:policy"), req.policy)
+    # Background task: an HTTP error handler cannot answer for it, so every Redis call retries
+    # (backoff, max 2 min) across an outage. submit() is idempotent per event (finished ids skipped,
+    # re-adding a queued id only overwrites its own score), so a retried chunk cannot duplicate work.
+    wait = lambda fn: retry(fn, "storm", max_wait_s=120)  # noqa: E731
+    wait(lambda: q.r.set(q.k("meta:policy"), req.policy))
     chunks = 20
     size = math.ceil(req.n / chunks)
     for i in range(chunks):
-        q.submit(jobs[i * size:(i + 1) * size], req.policy)
+        wait(lambda i=i: q.submit(jobs[i * size:(i + 1) * size], req.policy))
         time.sleep(0.1)
     if req.critical:
         time.sleep(max(0.0, t0 + req.critical_after_s - time.time()))
-        q.submit([make_critical_job(rng, objects) for _ in range(req.critical)], req.policy)
+        crit = [make_critical_job(rng, objects) for _ in range(req.critical)]
+        wait(lambda: q.submit(crit, req.policy))
 
 
 @app.post("/api/cloud/storm")
