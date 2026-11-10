@@ -20,11 +20,12 @@ from __future__ import annotations
 
 import json
 import os
-import time
+from datetime import datetime, timezone
 
 import redis
 
 from backend.cloud.jobs import Job
+from backend.cloud.scoring import compute_score
 
 # pop: take the best-scored job and lease it, in one atomic step.
 _POP_LUA = """
@@ -99,13 +100,14 @@ return {requeued, failed}
 
 class Queue:
     def __init__(self, url: str | None = None, ns: str = "",
-                 lease_seconds: float | None = None, max_retries: int = 3) -> None:
+                 lease_seconds: float | None = None, max_retries: int | None = None) -> None:
         self.r = redis.Redis.from_url(
             url or os.environ.get("REDIS_URL", "redis://redis:6379"), decode_responses=True)
         self.ns = ns
         self.lease_seconds = float(lease_seconds if lease_seconds is not None
                                    else os.environ.get("LEASE_SECONDS", "30"))
-        self.max_retries = max_retries
+        self.max_retries = int(max_retries if max_retries is not None
+                               else os.environ.get("MAX_RETRIES", "3"))
         self._pop = self.r.register_script(_POP_LUA)
         self._complete = self.r.register_script(_COMPLETE_LUA)
         self._reap = self.r.register_script(_REAP_LUA)
@@ -129,6 +131,24 @@ class Queue:
         pipe.zadd(self.k("jobs"), {job.event_id: score})
         pipe.execute()
         return True
+
+    def submit(self, jobs: list[Job], policy: str) -> int:
+        """Stamp enqueued_at = now, score by `policy`, enqueue in one pipelined burst.
+        Jobs that already have a result are skipped. Returns how many were queued."""
+        done = self.r.mget([self.k("result:" + j.event_id) for j in jobs]) if jobs else []
+        pipe = self.r.pipeline()
+        queued = 0
+        for job, existing in zip(jobs, done):
+            if existing is not None:
+                continue
+            job.enqueued_at = datetime.now(timezone.utc).isoformat()  # distinct per job -> stable fifo
+            payload = job.model_dump()
+            payload["score"] = compute_score(job, policy)
+            pipe.set(self.k("job:" + job.event_id), json.dumps(payload))
+            pipe.zadd(self.k("jobs"), {job.event_id: payload["score"]})
+            queued += 1
+        pipe.execute()
+        return queued
 
     # --- worker side --------------------------------------------------
     def pop(self, worker_id: str) -> dict | None:

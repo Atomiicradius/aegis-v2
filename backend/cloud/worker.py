@@ -12,6 +12,7 @@ import logging
 import os
 import signal
 import socket
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -63,15 +64,24 @@ def main() -> None:
 
     worker_id = socket.gethostname()
     q = Queue()
-    last_beat = last_reap = 0.0
+    last_reap = 0.0
     done = 0
     print(f"[worker {worker_id}] up; lease={q.lease_seconds}s llm_mode={os.environ.get('LLM_MODE')}", flush=True)
 
+    # Heartbeat runs in its own daemon thread so it keeps beating during a long job.
+    # Job execution below is still strictly one job at a time.
+    beating = threading.Event()
+
+    def _beat() -> None:
+        while not beating.is_set():
+            q.heartbeat(worker_id)
+            beating.wait(HEARTBEAT_EVERY_S)
+
+    beat_thread = threading.Thread(target=_beat, daemon=True)
+    beat_thread.start()
+
     while not _stop:
         t = time.monotonic()
-        if t - last_beat >= HEARTBEAT_EVERY_S:
-            q.heartbeat(worker_id)
-            last_beat = t
         if t - last_reap >= REAP_EVERY_S:
             requeued, failed = q.reap()
             if requeued or failed:
@@ -85,6 +95,8 @@ def main() -> None:
         run_one(q, worker_id, stored)
         done += 1
 
+    beating.set()
+    beat_thread.join()      # stop beating BEFORE deregistering, or it could re-register
     q.deregister(worker_id)
     print(f"[worker {worker_id}] stopped cleanly after {done} jobs", flush=True)
 
