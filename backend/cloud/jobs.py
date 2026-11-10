@@ -41,6 +41,8 @@ class Job(BaseModel):
     tca_utc: str
     mission_priority: float | None = None
     enqueued_at: str = ""
+    risk: float = 0.0
+    is_critical: bool = False
 
     @model_validator(mode="after")
     def _fill_defaults(self) -> "Job":

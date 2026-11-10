@@ -1,0 +1,93 @@
+"""
+worker.py — single-threaded queue worker. ONE job at a time per process: the
+LLM fallback counter used for `fallbacks_used` is per-process, so concurrent
+jobs in one process would blend each other's counts.
+
+    python -m backend.cloud.worker
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import signal
+import socket
+import time
+from datetime import datetime, timezone
+
+from backend.cloud.jobs import Job, process_job
+from backend.cloud.queue import Queue
+
+HEARTBEAT_EVERY_S = 2.0
+REAP_EVERY_S = 5.0
+IDLE_SLEEP_S = 0.02
+
+_stop = False
+
+
+def _request_stop(signum, frame) -> None:  # SIGTERM / SIGINT: finish current job, then exit
+    global _stop
+    _stop = True
+
+
+def _iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def run_one(q: Queue, worker_id: str, stored: dict) -> None:
+    job = Job(**{k: v for k, v in stored.items() if k != "score"})
+    started_at = _iso()
+    try:
+        outcome = process_job(job)
+    except Exception as exc:  # noqa: BLE001 - record the failure, still complete the job
+        outcome = {"resolution_status": "error", "error": repr(exc),
+                   "llm_mode": os.environ.get("LLM_MODE", "real"), "fallbacks_used": 0}
+    result = {
+        **outcome,
+        "event_id": job.event_id,
+        "worker_id": worker_id,
+        "enqueued_at": job.enqueued_at,
+        "started_at": started_at,
+        "finished_at": _iso(),
+        "retries": q.retries(job.event_id),
+        "risk": job.risk,
+        "is_critical": job.is_critical,
+    }
+    q.complete(job.event_id, result)
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.ERROR)  # keep the negotiator's per-round logs quiet
+    signal.signal(signal.SIGTERM, _request_stop)
+    signal.signal(signal.SIGINT, _request_stop)
+
+    worker_id = socket.gethostname()
+    q = Queue()
+    last_beat = last_reap = 0.0
+    done = 0
+    print(f"[worker {worker_id}] up; lease={q.lease_seconds}s llm_mode={os.environ.get('LLM_MODE')}", flush=True)
+
+    while not _stop:
+        t = time.monotonic()
+        if t - last_beat >= HEARTBEAT_EVERY_S:
+            q.heartbeat(worker_id)
+            last_beat = t
+        if t - last_reap >= REAP_EVERY_S:
+            requeued, failed = q.reap()
+            if requeued or failed:
+                print(f"[worker {worker_id}] reaped: requeued={requeued} failed={failed}", flush=True)
+            last_reap = t
+
+        stored = q.pop(worker_id)
+        if stored is None:
+            time.sleep(IDLE_SLEEP_S)
+            continue
+        run_one(q, worker_id, stored)
+        done += 1
+
+    q.deregister(worker_id)
+    print(f"[worker {worker_id}] stopped cleanly after {done} jobs", flush=True)
+
+
+if __name__ == "__main__":
+    main()

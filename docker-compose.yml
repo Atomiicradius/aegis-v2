@@ -1,0 +1,18 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  worker:
+    build: .
+    image: aegis-v2
+    command: python -m backend.cloud.worker
+    depends_on:
+      - redis
+    environment:
+      REDIS_URL: redis://redis:6379
+      OFFLINE: "1"
+      LLM_MODE: stub
+      LLM_STUB_MS: ${LLM_STUB_MS:-150}
+      LEASE_SECONDS: ${LEASE_SECONDS:-30}
