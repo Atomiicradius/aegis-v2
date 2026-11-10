@@ -45,7 +45,7 @@ For synthetic events "now" is the newest TLE epoch; `hours_to_tca` is the genera
 One job at a time per process (needed for `fallbacks_used`). Heartbeat in a daemon thread every 2 s; reaper every 5 s (between jobs); idle sleep 20 ms. SIGTERM: finish current job, deregister, exit. `worker_id` = hostname. A job that raises is recorded as `error` and still completed.
 Live worker = heartbeat < 10 s old; dead = registered but silent >= 10 s.
 
-## API + dashboard (`backend/cloud/api.py`, compose service `api`, http://localhost:8000)
+## API + dashboard (`backend/cloud/api.py`, compose service `api`, http://localhost:8010)
 `GET /` dashboard; `GET /api/cloud/stats` (fixed key contract); `POST /api/cloud/storm {n,critical,critical_after_s,policy}`, `/critical {k}`, `/reset` (FLUSHDB). Details and demo flow: DEMO.md.
 
 ## Env vars

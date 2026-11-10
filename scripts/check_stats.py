@@ -1,6 +1,6 @@
 """Poll the stats API once a second and print the numbers (stdlib only, run on the HOST).
 
-    python scripts/check_stats.py [--storm 400] [--seconds 20] [--url http://localhost:8000]
+    python scripts/check_stats.py [--storm 400] [--seconds 20] [--url http://localhost:8010]
 --storm N first POSTs a priority storm of N jobs (with 3 critical after 5 s).
 """
 import argparse
@@ -9,7 +9,7 @@ import time
 import urllib.request
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--url", default="http://localhost:8000")
+ap.add_argument("--url", default="http://localhost:8010")
 ap.add_argument("--seconds", type=int, default=20)
 ap.add_argument("--storm", type=int, default=0)
 a = ap.parse_args()

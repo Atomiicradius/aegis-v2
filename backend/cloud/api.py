@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from redis.exceptions import RedisError
@@ -40,6 +41,13 @@ THROUGHPUT_S = 5      # throughput = completions in the last 5 s / 5
 STATIC = Path(__file__).parent / "static"
 
 app = FastAPI(title="Aegis cloud")
+# The React app (Vite dev server, :5173 or the next free port) calls this API cross-origin.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 q = Queue()
 
 

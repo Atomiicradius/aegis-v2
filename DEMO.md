@@ -1,7 +1,28 @@
 # DEMO.md — live demo script (PowerShell, from `D:\aegis-v2`)
 
 Timings are from rehearsals on this machine (stub 150 ms/call = ~0.3 s per job per worker, ~3.2 jobs/s per worker).
-Use **two PowerShell windows**: A = commands, B = autoscaler. Dashboard: http://localhost:8000
+Use **two PowerShell windows**: A = commands, B = autoscaler. Dashboard: http://localhost:8010
+
+## Start everything (three windows)
+The React app (`/cloud` page) needs the original backend on :8000, the cloud stack (API on :8010) and Vite on :5173.
+```powershell
+# window 1 - cloud stack (Docker Desktop running)
+cd D:egis-v2
+Set-Content .env "LEASE_SECONDS=10"
+docker compose up -d redis api
+docker compose up -d --scale worker=2 worker
+
+# window 2 - original backend (OFFLINE=1: TLEs come from the committed snapshot, never waits on CelesTrak)
+cd D:egis-v2ackend
+$env:OFFLINE = "1"
+python -m uvicorn app.main:app --port 8000
+
+# window 3 - React app
+cd D:egis-v2rontend
+npm run dev
+```
+Open http://localhost:5173/cloud . The nav badge (top right) reads **Live** on every page once window 2 is up; **Reconnecting** if the backend is down.
+The plain HTML dashboard at http://localhost:8010 still works and needs none of windows 2-3.
 
 ## 0. Pre-flight (5 min before)
 ```powershell
@@ -12,11 +33,11 @@ docker compose down
 docker compose build                                       # only needed after code changes
 docker compose up -d redis api
 docker compose up -d --scale worker=2 worker
-Invoke-RestMethod -Method Post http://localhost:8000/api/cloud/reset
-start http://localhost:8000
+Invoke-RestMethod -Method Post http://localhost:8010/api/cloud/reset
+start http://localhost:8010
 ```
 Checklist: dashboard dot is **green**, Live workers = **2**, everything else 0, policy/LLM pill shows `stub (150 ms)`.
-Between rehearsals always run the reset line again (`Invoke-RestMethod -Method Post http://localhost:8000/api/cloud/reset`;
+Between rehearsals always run the reset line again (`Invoke-RestMethod -Method Post http://localhost:8010/api/cloud/reset`;
 `python scripts/reset_redis.py` does NOT work on the host - redis is only installed in the image; use
 `docker compose run --rm worker python scripts/reset_redis.py` if the API is down).
 
@@ -24,7 +45,7 @@ Between rehearsals always run the reset line again (`Invoke-RestMethod -Method P
 Say: queue + 2 workers, nothing happening. Point at the heartbeat ages (< 2 s) in the worker table.
 
 ## 2. Storm: 800 events, 2 workers (about 90 s if left alone)
-Click **Storm 800 (priority)** (or: `Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/cloud/storm -ContentType 'application/json' -Body '{"n":800,"critical":0,"policy":"priority"}'`).
+Click **Storm 800 (priority)** (or: `Invoke-RestMethod -Method Post -Uri http://localhost:8010/api/cloud/storm -ContentType 'application/json' -Body '{"n":800,"critical":0,"policy":"priority"}'`).
 Look at: Queue depth jumps to ~800 within 2 s, throughput settles at ~6.4 jobs/s, latency p95 climbs.
 
 ## 3. Autoscaler 2 -> 8 (35 s drain instead of 92 s)
@@ -43,9 +64,9 @@ whose risk happened to be >= 0.8 - they are critical by definition and priority 
 ## 5. Kill a worker (use a deep queue; needs the autoscaler STOPPED)
 ```powershell
 # window B: Ctrl+C the autoscaler. If it keeps running it restarts the killed container within 2 s and no dead worker shows.
-Invoke-RestMethod -Method Post http://localhost:8000/api/cloud/reset
+Invoke-RestMethod -Method Post http://localhost:8010/api/cloud/reset
 docker compose up -d --scale worker=4 worker
-Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/cloud/storm -ContentType 'application/json' -Body '{"n":800,"critical":0,"policy":"priority"}'
+Invoke-RestMethod -Method Post -Uri http://localhost:8010/api/cloud/storm -ContentType 'application/json' -Body '{"n":800,"critical":0,"policy":"priority"}'
 Start-Sleep -Seconds 6
 docker kill (docker compose ps -q --status running worker | Select-Object -Last 1)
 ```
@@ -73,7 +94,7 @@ Remove-Item .env; docker compose down
 | `docker` commands hang or "cannot connect" | start Docker Desktop, wait for the whale to stop animating |
 | Redis down (API returns 503, dot red) | `docker compose up -d redis api` (queue contents are lost; re-run reset + storm) |
 | API down, Redis fine | `docker compose up -d api`; drive the demo with `docker compose run --rm worker python scripts/storm.py --n 800 --policy priority --critical 3 --critical-after 8 --watch --reset` |
-| Port 8000 in use | `netstat -ano \| findstr :8000`, `taskkill /PID <pid> /F`; or change `"8000:8000"` in docker-compose.yml |
+| Port 8010 (cloud API) or 8000 (old backend) in use | `netstat -ano \| findstr :8010`, `taskkill /PID <pid> /F`; or change the host side of `"8010:8000"` in docker-compose.yml (and `VITE_CLOUD_API`) |
 | Workers not scaling | autoscaler window shows `ERROR`? run `docker compose ps`; check it runs from `D:\aegis-v2`; `python scripts\autoscaler.py --dry-run` to see its decisions; set manually: `docker compose up -d --scale worker=8 worker` |
 | Live workers stuck at 0 after reset | wait 2-3 s (heartbeats re-register); else `docker compose up -d --scale worker=2 worker` |
 | Dead worker never shows in step 5 | autoscaler still running (restarted it) - Ctrl+C it and kill again |

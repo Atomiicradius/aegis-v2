@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -229,6 +230,11 @@ def get_raw_tles(force_refresh: bool = False) -> list[RawTLE]:
          raise CelesTrakFetchError.
     """
     now = datetime.now(timezone.utc)
+
+    # OFFLINE=1 (set for the cloud stack and the local demo): never touch the
+    # network, so there is no 10 s timeout; use the committed snapshot instead.
+    if os.environ.get("OFFLINE", "").strip().lower() in ("1", "true", "yes", "on"):
+        return read_cache(CACHE_PATH.parent / "tle_snapshot.json")
 
     try:
         raw_text = fetch_tle_group()
