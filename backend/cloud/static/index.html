@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aegis Cloud</title>
+<!-- No external dependencies: no CDN, no fonts, no build step. Polls /api/cloud/stats once a second. -->
+<style>
+  :root { --bg:#0b1020; --card:#131a30; --line:#243052; --text:#e8ecf8; --dim:#8b97b8;
+          --ok:#3ddc97; --bad:#ff5c6c; --warn:#ffb84d; --accent:#5aa9ff; --crit:#ff7a45; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:18px/1.35 system-ui,Segoe UI,Roboto,sans-serif; }
+  header { display:flex; align-items:center; gap:28px; padding:14px 28px; background:#0e1530;
+           border-bottom:1px solid var(--line); font-size:20px; }
+  header h1 { margin:0; font-size:26px; letter-spacing:.5px; }
+  header .pill { padding:4px 14px; border:1px solid var(--line); border-radius:999px; }
+  header .spacer { flex:1; }
+  #conn { display:flex; align-items:center; gap:10px; }
+  #dot { width:16px; height:16px; border-radius:50%; background:var(--bad); }
+  #dot.up { background:var(--ok); }
+  main { padding:22px 28px; display:grid; gap:18px; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:18px; }
+  .tile, .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 18px; }
+  .tile .label { color:var(--dim); font-size:16px; text-transform:uppercase; letter-spacing:1px; }
+  .tile .value { font-size:56px; font-weight:700; line-height:1.1; font-variant-numeric:tabular-nums; }
+  .tile .sub { color:var(--dim); font-size:16px; }
+  .tile.crit { border-color:var(--crit); box-shadow:0 0 0 1px var(--crit) inset; }
+  .tile.crit .label { color:var(--crit); }
+  .tile.bad .value { color:var(--bad); }
+  .tile.flash { animation:flash 1s ease-out; }
+  @keyframes flash { 0% { background:#2a5cff; transform:scale(1.04); } 100% { background:var(--card); transform:none; } }
+  .lat { font-size:30px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .lat small { font-size:16px; color:var(--dim); font-weight:400; margin-right:4px; }
+  .lat span + span { margin-left:18px; }
+  .charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:18px; }
+  .card h3 { margin:0 0 6px; font-size:16px; color:var(--dim); text-transform:uppercase; letter-spacing:1px;
+             display:flex; justify-content:space-between; }
+  .card h3 b { color:var(--text); font-size:20px; }
+  canvas { width:100%; height:110px; display:block; }
+  table { width:100%; border-collapse:collapse; font-size:20px; font-variant-numeric:tabular-nums; }
+  th { color:var(--dim); text-align:left; font-weight:500; font-size:15px; text-transform:uppercase; letter-spacing:1px; }
+  td, th { padding:7px 10px; border-bottom:1px solid var(--line); }
+  .badge { padding:2px 12px; border-radius:999px; font-size:16px; font-weight:600; }
+  .badge.alive { background:#12382b; color:var(--ok); }
+  .badge.dead { background:#451820; color:var(--bad); }
+  tr.dead td { color:var(--bad); }
+  .controls { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+  button { font:inherit; font-weight:600; color:var(--text); background:#1d2a50; border:1px solid var(--accent);
+           border-radius:10px; padding:12px 22px; cursor:pointer; }
+  button:hover:not(:disabled) { background:#27386b; }
+  button.warn { border-color:var(--crit); }
+  button.danger { border-color:var(--bad); }
+  button:disabled { opacity:.45; cursor:wait; }
+  #msg { color:var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>AEGIS &middot; Cloud</h1>
+  <span class="pill">policy: <b id="policy">-</b></span>
+  <span class="pill">LLM: <b id="llm">-</b></span>
+  <span class="spacer"></span>
+  <span id="conn"><span id="dot"></span><span id="connText">connecting...</span></span>
+</header>
+
+<main>
+  <div class="controls">
+    <button data-act="storm" data-body='{"n":800,"critical":0,"policy":"priority"}'>Storm 800 (priority)</button>
+    <button data-act="storm" data-body='{"n":800,"critical":0,"policy":"fifo"}'>Storm 800 (fifo)</button>
+    <button class="warn" data-act="critical" data-body='{"k":3}'>Inject 3 critical</button>
+    <button class="danger" data-act="reset" data-confirm="Flush Redis and wipe all queue state?">Reset</button>
+    <span id="msg"></span>
+  </div>
+
+  <div class="tiles">
+    <div class="tile"><div class="label">Queue depth</div><div class="value" id="depth">0</div></div>
+    <div class="tile"><div class="label">Processing</div><div class="value" id="processing">0</div></div>
+    <div class="tile"><div class="label">Completed</div><div class="value" id="completed">0</div></div>
+    <div class="tile"><div class="label">Throughput</div><div class="value" id="throughput">0</div><div class="sub">jobs / s</div></div>
+    <div class="tile" id="liveTile"><div class="label">Live workers</div><div class="value" id="live">0</div><div class="sub" id="liveSub"></div></div>
+    <div class="tile"><div class="label">Retries</div><div class="value" id="retries">0</div></div>
+    <div class="tile" id="failedTile"><div class="label">Failed</div><div class="value" id="failed">0</div></div>
+  </div>
+
+  <div class="tiles">
+    <div class="tile"><div class="label">Latency (last 500)</div>
+      <div class="lat"><span><small>avg</small><b id="lAvg">0</b></span><span><small>p95</small><b id="lP95">0</b></span><span><small>p99</small><b id="lP99">0</b></span></div>
+      <div class="sub">milliseconds, enqueue &rarr; finish</div></div>
+    <div class="tile crit"><div class="label">Critical latency</div>
+      <div class="lat"><span><small>avg</small><b id="cAvg">0</b></span><span><small>max</small><b id="cMax">0</b></span><span><small>jobs</small><b id="cCount">0</b></span></div>
+      <div class="sub">milliseconds, critical jobs in the last 500</div></div>
+  </div>
+
+  <div class="charts">
+    <div class="card"><h3>Queue depth <b id="cvDepth"></b></h3><canvas id="sDepth"></canvas></div>
+    <div class="card"><h3>Throughput (jobs/s) <b id="cvTp"></b></h3><canvas id="sTp"></canvas></div>
+    <div class="card"><h3>Live workers <b id="cvLive"></b></h3><canvas id="sLive"></canvas></div>
+  </div>
+
+  <div class="card">
+    <h3>Workers</h3>
+    <table><thead><tr><th>Worker</th><th>Status</th><th>Jobs done</th><th>Heartbeat age</th></tr></thead>
+      <tbody id="workers"><tr><td colspan="4">no workers registered</td></tr></tbody></table>
+  </div>
+</main>
+
+<script>
+"use strict";
+const KEEP = 120;                                   // samples kept for sparklines (= 2 minutes)
+const hist = { depth: [], tp: [], live: [] };
+let lastLive = null;
+const $ = id => document.getElementById(id);
+
+function push(arr, v) { arr.push(v); if (arr.length > KEEP) arr.shift(); }
+
+// Draw a filled line chart on a canvas (scaled for hi-dpi screens).
+function spark(canvas, data, color) {
+  const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const c = canvas.getContext("2d"); c.scale(dpr, dpr); c.clearRect(0, 0, w, h);
+  if (data.length < 2) return;
+  const max = Math.max(1, ...data), step = w / (KEEP - 1), x0 = w - (data.length - 1) * step;
+  const y = v => h - 4 - (v / max) * (h - 12);
+  c.beginPath(); data.forEach((v, i) => c[i ? "lineTo" : "moveTo"](x0 + i * step, y(v)));
+  c.strokeStyle = color; c.lineWidth = 2.5; c.stroke();
+  c.lineTo(w, h); c.lineTo(x0, h); c.closePath(); c.fillStyle = color + "33"; c.fill();
+  c.fillStyle = "#8b97b8"; c.font = "13px system-ui"; c.fillText("max " + max, 4, 14);
+}
+
+function flash(el) { el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
+
+function render(s) {
+  const live = s.workers.filter(w => w.alive).length, dead = s.workers.length - live;
+  $("policy").textContent = s.policy;
+  $("llm").textContent = s.llm_mode + (s.llm_mode === "stub" ? " (" + s.stub_ms + " ms)" : "");
+  $("depth").textContent = s.queue_depth;
+  $("processing").textContent = s.processing;
+  $("completed").textContent = s.completed_total;
+  $("throughput").textContent = s.throughput_per_s.toFixed(1);
+  $("live").textContent = live;
+  $("liveSub").textContent = dead ? dead + " dead" : "";
+  $("retries").textContent = s.retries_total;
+  $("failed").textContent = s.failed_total;
+  $("failedTile").classList.toggle("bad", s.failed_total > 0);
+  $("lAvg").textContent = s.latency_ms.avg; $("lP95").textContent = s.latency_ms.p95; $("lP99").textContent = s.latency_ms.p99;
+  $("cAvg").textContent = s.critical_latency_ms.avg; $("cMax").textContent = s.critical_latency_ms.max;
+  $("cCount").textContent = s.critical_latency_ms.count;
+
+  if (lastLive !== null && live !== lastLive) flash($("liveTile"));   // autoscaling shows up here
+  lastLive = live;
+
+  push(hist.depth, s.queue_depth); push(hist.tp, s.throughput_per_s); push(hist.live, live);
+  $("cvDepth").textContent = s.queue_depth; $("cvTp").textContent = s.throughput_per_s.toFixed(1); $("cvLive").textContent = live;
+  spark($("sDepth"), hist.depth, "#5aa9ff"); spark($("sTp"), hist.tp, "#3ddc97"); spark($("sLive"), hist.live, "#ffb84d");
+
+  // Dead workers stay in the table (red) so a crash is visible.
+  const rows = s.workers.map(w =>
+    `<tr class="${w.alive ? "" : "dead"}"><td>${w.id.slice(0, 8)}</td>` +
+    `<td><span class="badge ${w.alive ? "alive" : "dead"}">${w.alive ? "alive" : "DEAD"}</span></td>` +
+    `<td>${w.jobs_done}</td><td>${w.last_heartbeat_age_s.toFixed(1)} s</td></tr>`);
+  $("workers").innerHTML = rows.join("") || '<tr><td colspan="4">no workers registered</td></tr>';
+}
+
+function setConn(ok, text) { $("dot").classList.toggle("up", ok); $("connText").textContent = text; }
+
+async function poll() {
+  try {
+    const r = await fetch("/api/cloud/stats", { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    render(await r.json());
+    setConn(true, "connected");
+  } catch (e) {
+    setConn(false, "disconnected: " + e.message);
+  }
+}
+setInterval(poll, 1000); poll();
+
+// Buttons: POST to the control endpoints; all buttons are disabled while a request is in flight.
+const buttons = document.querySelectorAll("button[data-act]");
+buttons.forEach(b => b.addEventListener("click", async () => {
+  if (b.dataset.confirm && !window.confirm(b.dataset.confirm)) return;
+  buttons.forEach(x => x.disabled = true);
+  $("msg").textContent = "working...";
+  try {
+    const r = await fetch("/api/cloud/" + b.dataset.act, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: b.dataset.body || "{}" });
+    $("msg").textContent = r.ok ? b.textContent + ": ok" : b.textContent + ": HTTP " + r.status;
+  } catch (e) { $("msg").textContent = "request failed: " + e.message; }
+  buttons.forEach(x => x.disabled = false);
+  poll();
+}));
+</script>
+</body>
+</html>
