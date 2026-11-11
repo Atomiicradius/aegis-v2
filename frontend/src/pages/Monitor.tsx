@@ -7,6 +7,7 @@ import { useGlobeStage } from '../components/globe/GlobeStage';
 import { MOCK_TRACKED_OBJECTS } from '../components/globe/mockTrackedObjects';
 import { useAnimeSlideIn } from '../lib/useAnimeEntry';
 import { useAnimeStagger } from '../lib/useAnimeStagger';
+import { useTrafficSelection } from '../lib/useTrafficSelection';
 import { useNegotiationStore } from '../store/useNegotiationStore';
 
 const CONNECTION_TONE = {
@@ -35,6 +36,8 @@ export default function Monitor() {
     : new Set<string>();
   const hazardCount = trackedObjects.filter((object) => flaggedIds.has(object.norad_id)).length;
   const activeCount = trackedObjects.length - hazardCount;
+  // Display-only background traffic (real LEO satellites drawn on the globe, never screened or registered).
+  const traffic = useTrafficSelection(trackedObjects.map((object) => object.norad_id), true);
 
   useEffect(() => {
     if (phase === 'monitor-enter') return;
@@ -91,6 +94,11 @@ export default function Monitor() {
             <span className="hidden h-3 w-px bg-border sm:block" />
             <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-text-muted">sector / LEO-curated</span>
             <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-text-muted">propagator / SGP4</span>
+            {traffic.sats.length > 0 && (
+              <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-text-muted">
+                tracked {trackedObjects.length} / background traffic {traffic.sats.length} / display only, not screened
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-[0.16em]">
             <span className={`h-1.5 w-1.5 ${connectionStatus === 'connected' ? 'bg-success shadow-[0_0_8px_var(--color-success)]' : connectionStatus === 'disconnected' ? 'bg-danger' : 'bg-warning animate-pulse'}`} />

@@ -1,11 +1,14 @@
 import { motion, useReducedMotion } from 'framer-motion';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import ReactGlobe, { type GlobeMethods } from 'react-globe.gl';
+import { useLocation } from 'react-router-dom';
 import { ACESFilmicToneMapping, AdditiveBlending, AmbientLight, BufferGeometry, Color, DirectionalLight, Float32BufferAttribute, Group, Mesh, MeshPhongMaterial, Points, PointsMaterial, ShaderMaterial, SphereGeometry, Vector2 } from 'three';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 
 import earthBumpTexture from '../../assets/earth-bump.png';
 import earthNightTexture from '../../assets/earth-night.jpg';
+import { useTrafficSelection } from '../../lib/useTrafficSelection';
+import { useBackgroundTraffic } from './BackgroundTraffic';
 import { DOCKED_OBJECT_GROUPS } from './dockedGroups';
 import { positionKmToGeo } from './eciToGeo';
 import { GlobeHud } from './GlobeHud';
@@ -252,6 +255,12 @@ export const Globe = forwardRef<GlobeHandle, Props>(function Globe(
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+
+  // Display-only background traffic: only on /monitor, only in the live/conjunction views (never landing,
+  // transition or trajectory, and not while the persistent globe sits hidden behind other pages).
+  const onMonitor = useLocation().pathname === '/monitor' && (mode === 'live' || mode === 'conjunction');
+  const trafficSelection = useTrafficSelection(useMemo(() => trackedObjects.map((o) => o.norad_id), [trackedObjects]), onMonitor);
+  useBackgroundTraffic(globeRef, isGlobeReady, onMonitor, trafficSelection.sats, Boolean(prefersReducedMotion));
 
   const flaggedIds = useMemo(() => conjunctionAlert ? new Set([conjunctionAlert.primary_id, conjunctionAlert.secondary_id]) : new Set<string>(), [conjunctionAlert]);
 

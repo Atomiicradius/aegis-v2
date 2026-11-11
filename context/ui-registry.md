@@ -77,6 +77,8 @@ Last updated: 2026-09-12
 | Interactive | Solid danger action for active conjunction; 200ms hover, focus outline, pressed shift |
 | Status | Square glowing points; blue normal, red hazard, green live, amber reconnecting |
 
+**Background traffic (display only):** `components/globe/BackgroundTraffic.ts` (hook) + `lib/useTrafficSelection.ts` (loader, `?traffic=off|<N>|all`, env `VITE_BACKGROUND_TRAFFIC`). ONE `THREE.Points` object in the globe scene: 394 real LEO satellites (static `public/traffic-pool.json`, made by `scripts/export_traffic_pool.py`) propagated client-side with satellite.js, `#74a9ff` 2.6 px points at 0.85 opacity, `sizeAttenuation: false`, no DOM labels, no hover. Drawn only on `/monitor` in the live/conjunction views; updates 4 slices x 250 ms (each satellite once per second), paused when the tab is hidden, drawn once under prefers-reduced-motion; every failure is swallowed. NOT in the register, HUD clustering, detection or alerts. Header strip (left cluster) gains one mono line: `tracked 15 / background traffic 394 / display only, not screened` (hidden when off or when the pool did not load; header stays 42 px tall at 1366 and 1920).
+
 **Pattern notes:** Keep the Globe visually dominant. Overlay only information needed to identify the tracked set, inspect the active conjunction, and enter the resolution flow. Do not use a rounded floating legend card.
 
 ### Conjunction Details

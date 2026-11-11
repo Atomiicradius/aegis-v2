@@ -86,6 +86,11 @@ Get-Content results\benchmark.csv
 ```
 Say: the events use real satellites and real orbits (Starlink, OneWeb, Iridium NEXT, ... from CelesTrak) but the close approaches are invented for load - none is a real conjunction. Throughput scales ~linearly (3.2 -> 25.7 jobs/s for 1 -> 8 workers); priority costs no throughput and cuts critical latency 15-77x. Re-run: `python scripts\benchmark.py` (~7 min, FLUSHES Redis).
 
+## Monitor background traffic (display only)
+On `/monitor` the globe now shows **394 small blue dots = real LEO satellites** (Starlink, OneWeb, Iridium NEXT and others, from CelesTrak TLEs) drifting in real time behind the 15 curated objects. The header strip reads `TRACKED 15 / BACKGROUND TRAFFIC 394 / DISPLAY ONLY, NOT SCREENED`. They are NOT in the tracking register, the screening, or any alert: the scripted ISS vs CSS 3.2 km alert, Open resolution desk, Negotiate and History behave exactly as before.
+Toggle: `http://localhost:5173/monitor?traffic=off` (none), `?traffic=100` (a balanced 100), default = all 394. Set a different default with `VITE_BACKGROUND_TRAFFIC` (`off`, a number, or `all`). If `frontend/public/traffic-pool.json` is missing the Monitor just looks as it did before. Regenerate it with `python scripts\export_traffic_pool.py` after `python scripts\fetch_tle_pool.py`.
+Say: "The dots are real satellites on real orbits, there only so the sky looks like LEO. Aegis screens the 15 curated objects; the only conjunction you see is the one we staged."
+
 ## 7. Optional: Redis outage (rehearsed, ~45 s)
 Start a deep storm (step 2), then:
 ```powershell
