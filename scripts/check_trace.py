@@ -203,10 +203,10 @@ if not a.quick:
     api("/api/cloud/storm", {"n": 10, "critical": 0, "policy": "fifo"})
     time.sleep(1)
 
-    # First outage
+    # First outage (5 s: heartbeat period is 2 s, need >= 1 full beat in the window)
     compose("stop", "redis")
-    print("  Stopped Redis (outage 1); waiting 2 s ...")
-    time.sleep(2)
+    print("  Stopped Redis (outage 1); waiting 5 s ...")
+    time.sleep(5)
     compose("start", "redis")
     # Wait for API/workers to reconnect (confirms outage lock is set), then
     # sleep 10 s (> 7 s TTL) so the lock is definitely gone before outage 2.
@@ -223,8 +223,8 @@ if not a.quick:
 
     # Second outage -- lock has expired, should produce a second pair
     compose("stop", "redis")
-    print("  Stopped Redis (outage 2); waiting 2 s ...")
-    time.sleep(2)
+    print("  Stopped Redis (outage 2); waiting 5 s ...")
+    time.sleep(5)
     compose("start", "redis")
     print("  Started Redis; polling for two pairs ...")
 

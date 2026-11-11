@@ -38,9 +38,18 @@ def _sat_block(norad_id: str, by_id: dict, agent_id: AgentId) -> dict:
 
 
 def get_domain(r: Redis, ns: str, event_id: str) -> dict | None:
-    """Return the domain block for a completed job, or None if result:<id> is missing."""
+    """Return the domain block for any job state, or None if the event is unknown.
+
+    Reads result:<id> first (completed jobs, has compact outcome fields).
+    Falls back to job:<id> for unfinished jobs (queued / leased / requeued).
+    lead_h is stored in both payloads at job creation by events.py.
+    """
     prefix = ns if ns.endswith(":") else (ns + ":" if ns else "")
     raw = r.get(f"{prefix}result:{event_id}")
+    from_result = raw is not None
+    if raw is None:
+        # Unfinished job — read job payload (queued / leased / requeued)
+        raw = r.get(f"{prefix}job:{event_id}")
     if raw is None:
         return None
     d = json.loads(raw)
@@ -48,11 +57,12 @@ def get_domain(r: Redis, ns: str, event_id: str) -> dict | None:
     primary_id = d.get("primary_id", "")
     secondary_id = d.get("secondary_id", "")
     tca_utc = d.get("tca_utc", "")
-    miss_km = float(d.get("miss_km", 0.0))
+    # result:<id> stores "miss_km"; job:<id> stores "miss_distance_km"
+    miss_km = float(d.get("miss_km") if from_result else d.get("miss_distance_km", 0.0))
     risk = float(d.get("risk", 0.0))
     is_critical = bool(d.get("is_critical", False))
 
-    # lead_h stored directly by worker.py (set at job creation from risk.py's hours_to_tca)
+    # lead_h stored at job creation by events.py (in both job and result payloads).
     # Do NOT compute from tca_utc - enqueued_at: synthetic events have negative deltas
     # because tca_utc = TLE_epoch + hours_to_tca while enqueued_at = wall clock.
     lead_h: float | None = d.get("lead_h")
@@ -77,9 +87,9 @@ def get_domain(r: Redis, ns: str, event_id: str) -> dict | None:
         "risk": round(risk, 3),
         "risk_parts": {"closeness": closeness, "urgency": urgency, "mission": mission},
         "is_critical": is_critical,
-        # compact outcome fields
-        "maneuvering_norad": d.get("maneuvering_norad"),
-        "delta_v_mps": d.get("delta_v_mps"),
-        "residual_km": d.get("residual_km"),
-        "validation_clear": d.get("validation_clear"),
+        # compact outcome fields — only present in result:<id> (completed jobs)
+        "maneuvering_norad": d.get("maneuvering_norad") if from_result else None,
+        "delta_v_mps": d.get("delta_v_mps") if from_result else None,
+        "residual_km": d.get("residual_km") if from_result else None,
+        "validation_clear": d.get("validation_clear") if from_result else None,
     }

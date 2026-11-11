@@ -162,7 +162,7 @@ try:
             recomputed = round(0.5 * c + 0.3 * u + 0.2 * m, 3)
             reported = dom.get("risk", 0)
             if abs(recomputed - reported) < 0.05:
-                ok(f"risk_parts consistent: 0.5×{c}+0.3×{u}+0.2×{m}≈{recomputed} vs {reported}")
+                ok(f"risk_parts consistent: 0.5*{c}+0.3*{u}+0.2*{m}~={recomputed} vs {reported}")
             else:
                 ok(f"risk_parts present (small discrepancy expected from stored vs recomputed risk: {recomputed} vs {reported})")
     else:
