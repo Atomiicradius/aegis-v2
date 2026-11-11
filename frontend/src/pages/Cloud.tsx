@@ -283,7 +283,7 @@ export default function Cloud() {
           </section>
           {/* ── incident timeline + chaos dock ── */}
           <section className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]" style={HIDDEN} aria-label="Observability">
-            <IncidentTimeline events={timelineEvents} />
+            <IncidentTimeline events={timelineEvents} throughputHistory={history.map((h) => h.throughput)} />
             <ChaosDock events={timelineEvents} mock={mock} />
           </section>
 

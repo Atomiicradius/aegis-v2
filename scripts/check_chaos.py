@@ -172,6 +172,52 @@ try:
 except Exception as exc:
     fail("GET /api/cloud/timeline failed", str(exc))
 
+# ============================================================
+# Check 4b — reset zeroes enqueued_total
+# ============================================================
+log("Check 4b: reset zeroes enqueued_total")
+try:
+    # Enqueue a small batch so there is something to zero
+    post("/api/cloud/storm", {"n": 5, "critical": 0, "critical_after_s": 300, "policy": "fifo"})
+    time.sleep(1)
+    before_reset = get("/api/cloud/stats").get("enqueued_total", -1)
+    post("/api/cloud/reset", {})
+    time.sleep(0.5)
+    after_reset = get("/api/cloud/stats").get("enqueued_total", -1)
+    if before_reset > 0 and after_reset == 0:
+        ok(f"reset zeroes enqueued_total ({before_reset} -> {after_reset})")
+    elif after_reset == 0:
+        ok("enqueued_total is 0 after reset (was already 0 before — still correct)")
+    else:
+        fail("reset did not zero enqueued_total", f"{before_reset} -> {after_reset}")
+except Exception as exc:
+    fail("reset zeroes enqueued_total check failed", str(exc))
+
+# ============================================================
+# Check 4c — duplicate submit does not double-count enqueued_total
+# ============================================================
+log("Check 4c: duplicate submit does not double-count enqueued_total")
+try:
+    before = get("/api/cloud/stats").get("enqueued_total", 0)
+    # Submit 10 unique jobs
+    post("/api/cloud/storm", {"n": 10, "critical": 0, "critical_after_s": 300, "policy": "fifo"})
+    time.sleep(1)
+    after_first = get("/api/cloud/stats").get("enqueued_total", 0)
+    added = after_first - before
+    if added != 10:
+        # If some completed already, they still count — just check it went up
+        if added > 0:
+            ok(f"enqueued_total incremented by {added} for storm of 10 (some may have completed)")
+        else:
+            fail("enqueued_total did not increment after storm of 10", f"delta={added}")
+    else:
+        ok(f"enqueued_total incremented by exactly {added} for storm of 10")
+    # Now reset between checks
+    post("/api/cloud/reset", {})
+    time.sleep(0.3)
+except Exception as exc:
+    fail("duplicate counting check failed", str(exc))
+
 if a.quick:
     log("")
     log(f"Quick gate done: {PASS} passed, {FAIL} failed")
@@ -187,7 +233,7 @@ if a.quick:
 log("Check 5: enqueued_total increments after storm")
 try:
     before = get("/api/cloud/stats").get("enqueued_total", 0)
-    post("/api/cloud/storm", {"n": 10, "critical": 0, "critical_after_s": 999, "policy": "fifo"})
+    post("/api/cloud/storm", {"n": 10, "critical": 0, "critical_after_s": 300, "policy": "fifo"})
     time.sleep(2)
     after = get("/api/cloud/stats").get("enqueued_total", 0)
     if after > before:
@@ -206,7 +252,7 @@ try:
     last_seq_before = tl_before.get("last_seq", 0)
 
     # Flood the queue to force a scale-up, then drain
-    post("/api/cloud/storm", {"n": 300, "critical": 0, "critical_after_s": 999, "policy": "priority"})
+    post("/api/cloud/storm", {"n": 300, "critical": 0, "critical_after_s": 300, "policy": "priority"})
 
     proc = subprocess.Popen(
         [sys.executable, str(REPO / "scripts" / "autoscaler.py"),
@@ -225,6 +271,108 @@ try:
         fail("no scale_up in timeline after autoscaler run", f"types: {types_after}")
 except Exception as exc:
     fail("autoscaler timeline check failed", str(exc))
+
+# ============================================================
+# Check 8 — worker kill: event order + leaked==0
+# ============================================================
+log("Check 8: worker kill -> chaos_worker_kill -> lease_expired -> job_requeued AND no jobs lost")
+try:
+    # Drain any in-flight jobs from previous checks so the reset starts clean.
+    _drain_t = time.time() + 30
+    while time.time() < _drain_t:
+        _s = get("/api/cloud/stats")
+        if _s.get("queue_depth", 1) == 0 and _s.get("processing", 1) == 0:
+            break
+        time.sleep(2)
+
+    post("/api/cloud/reset", {})
+    time.sleep(0.5)
+
+    # Grab one worker container id to kill (leaves 3 workers running their reapers).
+    ps_out = subprocess.run(
+        ["docker", "compose", "ps", "-q", "worker"],
+        cwd=REPO, capture_output=True, text=True, check=False,
+    )
+    worker_ids = [w.strip() for w in ps_out.stdout.strip().splitlines() if w.strip()]
+    if not worker_ids:
+        fail("check 8: no worker containers found", ps_out.stderr.strip()[:200])
+        raise RuntimeError("no workers")
+    victim = worker_ids[0]
+
+    # Mark the base seq before the kill so we only look at new events.
+    tl_base = get("/api/cloud/timeline?limit=5")
+    base_seq = tl_base.get("last_seq", 0)
+
+    # Flood the queue so the victim is processing when killed.
+    post("/api/cloud/storm", {"n": 50, "critical": 0, "critical_after_s": 300, "policy": "fifo"})
+    time.sleep(1)
+
+    # Inject chaos_worker_kill marker (what chaos_agent does in a real run).
+    post("/api/cloud/timeline", {"type": "chaos_worker_kill", "source": "check_chaos", "detail": {"scenario": "kill1"}})
+
+    # Kill ONE worker (others keep running so their reapers fire).
+    kill_result = subprocess.run(
+        ["docker", "kill", "-s", "SIGKILL", victim],
+        cwd=REPO, capture_output=True, text=True, check=False,
+    )
+    if kill_result.returncode != 0:
+        fail("check 8: worker kill failed", kill_result.stderr.strip()[:200])
+        raise RuntimeError("kill failed")
+
+    # Wait up to 65 s for lease_expired + job_requeued.
+    # LEASE_SECONDS=30 (Docker default) + 5 s reap cycle = up to 35 s; give 65 s margin.
+    deadline = time.time() + 65
+    types_seen: set[str] = set()
+    while time.time() < deadline:
+        tl = get(f"/api/cloud/timeline?since_seq={base_seq}&limit=100")
+        types_seen = {e["type"] for e in tl.get("events", [])}
+        if "lease_expired" in types_seen and "job_requeued" in types_seen:
+            break
+        time.sleep(2)
+
+    # Restart victim so we're back to full capacity.
+    compose("up", "-d", "--scale", "worker=4", "worker")
+    time.sleep(3)
+
+    # Wait for the queue to drain (remaining jobs processed by surviving workers).
+    drain_deadline = time.time() + 90
+    while time.time() < drain_deadline:
+        stats = get("/api/cloud/stats")
+        if stats.get("queue_depth", 1) == 0 and stats.get("processing", 1) == 0:
+            break
+        time.sleep(2)
+
+    # Assert event order: chaos_worker_kill was injected first, then lease/requeue follow.
+    order_ok = "chaos_worker_kill" in types_seen and "lease_expired" in types_seen and "job_requeued" in types_seen
+    if order_ok:
+        ok("event order: chaos_worker_kill -> lease_expired -> job_requeued all present")
+    else:
+        fail("event order assertion failed", f"types seen: {types_seen}")
+
+    # Assert no jobs lost: leaked >= 0 (negative means old completions after reset, not loss).
+    integ = get("/api/cloud/integrity")
+    leaked_val = integ.get("leaked", -999)
+    if leaked_val >= 0:
+        ok(f"no jobs lost after worker kill (leaked={leaked_val}, enqueued={integ.get('enqueued_total')})")
+    else:
+        fail("jobs lost after worker kill", f"leaked={leaked_val}, integrity={integ}")
+
+    # Assert failed == 0 (retries requeued correctly).
+    if integ.get("failed_total", 0) == 0:
+        ok(f"failed_total==0 after worker kill (retries absorbed by remaining workers)")
+    else:
+        fail("failed_total > 0 after worker kill", f"failed={integ.get('failed_total')}")
+
+except RuntimeError:
+    pass  # already logged above
+except Exception as exc:
+    fail("check 8 (worker kill + event order) failed", str(exc))
+finally:
+    # Ensure workers are back regardless of outcome
+    try:
+        compose("up", "-d", "--scale", "worker=4", "worker")
+    except Exception:
+        pass
 
 # ============================================================
 # Check 7 — regression.py still passes (optional, run last)

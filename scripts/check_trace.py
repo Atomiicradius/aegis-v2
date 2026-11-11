@@ -208,8 +208,18 @@ if not a.quick:
     print("  Stopped Redis (outage 1); waiting 2 s ...")
     time.sleep(2)
     compose("start", "redis")
-    print("  Started Redis; waiting 15 s before second outage (lock TTL=7 s) ...")
-    time.sleep(15)
+    # Wait for API/workers to reconnect (confirms outage lock is set), then
+    # sleep 10 s (> 7 s TTL) so the lock is definitely gone before outage 2.
+    print("  Waiting for workers to reconnect after outage 1 ...")
+    for _i in range(20):
+        time.sleep(1)
+        try:
+            api("/api/cloud/stats")
+            print(f"  t+{_i+1}s: workers reconnected; sleeping 10 s to let lock (TTL=7 s) expire ...")
+            break
+        except Exception:
+            pass
+    time.sleep(10)
 
     # Second outage -- lock has expired, should produce a second pair
     compose("stop", "redis")
