@@ -21,6 +21,8 @@ export type CloudWorker = {
 export type CloudStats = {
   queue_depth: number;
   processing: number;
+  /** total jobs ever submitted (additive; absent on older API) */
+  enqueued_total?: number;
   completed_total: number;
   failed_total: number;
   retries_total: number;
@@ -35,6 +37,29 @@ export type CloudStats = {
   /** real satellites the storm draws from; absent on an older API */
   pool_size?: number;
   pool_groups?: Record<string, number>;
+};
+
+/** One event from GET /api/cloud/timeline. */
+export type TimelineEvent = {
+  seq: number;
+  ts: number;
+  type: string;
+  source: string;
+  detail: Record<string, unknown>;
+  event_id?: string;
+};
+
+/** GET /api/cloud/integrity result. */
+export type IntegrityResult = {
+  enqueued_total: number;
+  completed_total: number;
+  failed_total: number;
+  queue_depth: number;
+  processing: number;
+  accounted: number;
+  leaked: number;
+  consistent: boolean;
+  timestamp: string;
 };
 
 /** One row of GET /api/cloud/recent (a finished job; summaries only, no transcript). */
@@ -170,6 +195,24 @@ export async function fetchCloudTrace(eventId: string, signal?: AbortSignal): Pr
   return isRecord(d) && Array.isArray((d as Record<string, unknown>).attempts)
     ? { ok: true, data: d as unknown as CloudTrace }
     : { ok: false, error: 'unexpected trace payload' };
+}
+
+export async function fetchTimeline(sinceSeq = 0, signal?: AbortSignal): Promise<Result<{ events: TimelineEvent[]; last_seq: number }>> {
+  const result = await request(`/api/cloud/timeline?since_seq=${sinceSeq}&limit=200`, { signal });
+  if (!result.ok) return result;
+  const d = result.data;
+  return isRecord(d) && Array.isArray((d as Record<string, unknown>).events)
+    ? { ok: true, data: d as unknown as { events: TimelineEvent[]; last_seq: number } }
+    : { ok: false, error: 'unexpected timeline payload' };
+}
+
+export async function fetchIntegrity(signal?: AbortSignal): Promise<Result<IntegrityResult>> {
+  const result = await request('/api/cloud/integrity', { signal });
+  if (!result.ok) return result;
+  const d = result.data;
+  return isRecord(d) && typeof (d as Record<string, unknown>).consistent === 'boolean'
+    ? { ok: true, data: d as unknown as IntegrityResult }
+    : { ok: false, error: 'unexpected integrity payload' };
 }
 
 export const postStorm = (req: StormRequest) => post('/api/cloud/storm', req);

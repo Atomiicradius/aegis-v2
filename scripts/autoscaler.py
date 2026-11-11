@@ -2,6 +2,7 @@
 Queue-depth autoscaler for the `worker` compose service. Runs on the HOST, stdlib only.
 
     python scripts/autoscaler.py [--min 2] [--max 8] [--target 25] [--interval 2] [--cooldown 10] [--dry-run]
+    python scripts/autoscaler.py --api http://localhost:8010   # post scale_up/scale_down to timeline
 
 Every --interval seconds:
   load    = queue depth + jobs in flight           (read with redis-cli inside the redis container)
@@ -13,9 +14,11 @@ Every --interval seconds:
 Ctrl+C exits without touching the worker count. --duration S exits by itself after S seconds.
 """
 import argparse
+import json
 import math
 import subprocess
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -29,7 +32,21 @@ ap.add_argument("--interval", type=float, default=2.0)
 ap.add_argument("--cooldown", type=float, default=10.0, help="seconds load must stay low before scaling down")
 ap.add_argument("--dry-run", action="store_true", help="log decisions, change nothing")
 ap.add_argument("--duration", type=float, default=0, help="exit after this many seconds (0 = run until Ctrl+C)")
+ap.add_argument("--api", default="", help="cloud API URL for timeline events (empty = off)")
 a = ap.parse_args()
+
+
+def post_timeline(type_: str, detail: dict) -> None:
+    """Post a scale event to the cloud API timeline. Best-effort: never raises."""
+    if not a.api:
+        return
+    try:
+        body = json.dumps({"type": type_, "source": "autoscaler", "detail": detail}).encode()
+        req = urllib.request.Request(a.api + "/api/cloud/timeline", data=body,
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        urllib.request.urlopen(req, timeout=2)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def run(*args: str) -> str:
@@ -72,6 +89,7 @@ try:
                 action = f"SCALE UP -> {desired}"
                 if not a.dry_run:
                     scale(desired)
+                    post_timeline("scale_up", {"from": current, "to": desired, "depth": depth, "processing": processing})
             elif desired < current:
                 below_since = below_since or time.time()
                 waited = time.time() - below_since
@@ -81,6 +99,7 @@ try:
                     below_since = None            # next step needs a fresh cooldown
                     if not a.dry_run:
                         scale(current - 1)
+                        post_timeline("scale_down", {"from": current, "to": current - 1, "waited_s": round(waited, 1), "depth": depth})
                 else:
                     action = f"hold (below for {waited:.0f}/{a.cooldown:.0f}s, floor {floor})"
             else:

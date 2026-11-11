@@ -9,10 +9,13 @@ import { Sparkline } from '../components/cloud/Sparkline';
 import { StatCell } from '../components/cloud/StatCell';
 import { StatusChip } from '../components/cloud/StatusChip';
 import { TONE_TEXT, type Tone } from '../components/cloud/tone';
+import { ChaosDock } from '../components/cloud/ChaosDock';
+import { IncidentTimeline } from '../components/cloud/IncidentTimeline';
 import { postCritical, postReset, postStorm, type Result, type StormPolicy } from '../lib/cloudApi';
 import { useAnimeEntry } from '../lib/useAnimeEntry';
 import { useAnimeStagger } from '../lib/useAnimeStagger';
 import { useCloudStats } from '../lib/useCloudStats';
+import { useTimeline } from '../lib/useTimeline';
 
 const pad = (n: number, w: number) => String(Math.max(0, Math.round(n))).padStart(w, '0');
 const DASH = '--';
@@ -25,6 +28,7 @@ type Action = { label: string; run: () => Promise<Result<unknown>>; confirm?: st
 
 export default function Cloud() {
   const { stats, history, linkOk, lastError, mock } = useCloudStats();
+  const timelineEvents = useTimeline(mock);
   const [busy, setBusy] = useState<string | null>(null);
   const [lastAction, setLastAction] = useState('no action yet');
 
@@ -277,6 +281,12 @@ export default function Cloud() {
               </div>
             </aside>
           </section>
+          {/* ── incident timeline + chaos dock ── */}
+          <section className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]" style={HIDDEN} aria-label="Observability">
+            <IncidentTimeline events={timelineEvents} />
+            <ChaosDock events={timelineEvents} mock={mock} />
+          </section>
+
         </div>
 
         <footer className="mt-5 flex flex-col gap-2 border-t border-border py-5 font-mono text-[14px] uppercase tracking-[0.14em] text-text-muted sm:flex-row sm:items-center sm:justify-between">

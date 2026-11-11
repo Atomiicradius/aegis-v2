@@ -107,6 +107,49 @@ def cloud_timeline(since_seq: int = Query(0, ge=0), limit: int = Query(200, ge=1
     return {"events": events, "last_seq": last_seq}
 
 
+@app.get("/api/cloud/integrity")
+def cloud_integrity() -> dict:
+    """Queue integrity check: enqueued_total vs completed+failed+queued+processing."""
+    counters, depth, processing = q.r.pipeline().hgetall(q.k("counters")).zcard(q.k("jobs")).hlen(q.k("processing")).execute()
+    enqueued = int(counters.get("enqueued", 0))
+    completed = int(counters.get("completed", 0))
+    failed = int(counters.get("failed", 0))
+    accounted = completed + failed + depth + processing
+    leaked = enqueued - accounted
+    return {
+        "enqueued_total": enqueued,
+        "completed_total": completed,
+        "failed_total": failed,
+        "queue_depth": depth,
+        "processing": processing,
+        "accounted": accounted,
+        "leaked": leaked,
+        "consistent": leaked == 0,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+_TIMELINE_INJECT_WHITELIST = frozenset({
+    "scale_up", "scale_down", "chaos_inject", "chaos_fault", "chaos_recover",
+    "chaos_redis_kill", "chaos_worker_kill",
+})
+
+
+class TimelineInjectReq(BaseModel):
+    type: str
+    source: str = "external"
+    detail: dict = {}
+
+
+@app.post("/api/cloud/timeline")
+def timeline_inject(req: TimelineInjectReq) -> dict:
+    """Inject a timeline event from an external trusted agent (autoscaler, chaos_agent). Whitelisted types only."""
+    if req.type not in _TIMELINE_INJECT_WHITELIST:
+        raise HTTPException(status_code=422, detail=f"type '{req.type}' not in whitelist")
+    _timeline.emit(q.r, req.type, req.source, detail=req.detail)
+    return {"ok": True, "type": req.type}
+
+
 @app.get("/api/cloud/trace/{event_id}")
 def cloud_trace(event_id: str):
     """Return the full trace for a job. 404 JSON when expired or unknown."""
@@ -147,6 +190,7 @@ def stats() -> dict:
     return {
         "queue_depth": depth,
         "processing": processing,
+        "enqueued_total": int(counters.get("enqueued", 0)),
         "completed_total": int(counters.get("completed", 0)),
         "failed_total": int(counters.get("failed", 0)),
         "retries_total": int(counters.get("retries_total", 0)),

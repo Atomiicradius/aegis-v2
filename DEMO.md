@@ -101,6 +101,37 @@ docker compose start redis     # within ~5 s everything is back; the storm resum
 Look at: Completed still reaches the full total, Failed = 0, Retries = 1-3 (leases that expired during the outage). Nothing restarts (`docker compose ps`).
 Chaos figures for the 5 fault scenarios: `start results\chaos_recovery.png` (re-run: `python scripts\chaos.py`, ~35 min, stop the autoscaler first, FLUSHES Redis).
 
+## 8. Chaos dock (Block 3 — optional add-on, ~3 min)
+
+Start a fresh storm (step 2, 800 events), then scroll to the **Incident log** and **Fault injection** panels at the bottom of `/cloud`.
+
+```powershell
+# window B: start chaos_agent (read-only without --enable)
+python scripts\chaos_agent.py --enable --api http://localhost:8010
+```
+
+The **Fault injection** panel shows `armed` in the status chip and lists the 5 scenarios.
+
+1. Click **kill 2 of 4 workers** — two container IDs are killed; the worker table goes red within ~2 s.
+2. The **Incident log** panel shows a `chaos_fault` event (red ✕) followed by `lease_expired` and `job_requeued` as the reaper catches up (~12 s).
+3. Workers revive: `docker compose up -d --scale worker=4 worker` — a `chaos_recover` event (green ◎) appears.
+4. Optionally click **hard redis kill** to demonstrate the `redis_down` / `redis_up` pair in the timeline.
+5. The **three readouts** at the top of the incident log count total events, show the last event type, and the most common type.
+
+The **Autoscaler** also posts `scale_up` / `scale_down` events to the timeline when started with `--api`:
+```powershell
+python scripts\autoscaler.py --api http://localhost:8010
+```
+Scale events appear in the incident log as `+` (blue) and `−` (amber) glyphs.
+
+**Mock mode** (`http://localhost:5173/cloud?mock=chaos`): demonstrates the full chaos scenario (worker kills → redis outage → recovery) without Docker, running on scripted data. The incident log and chaos dock both render; scenario buttons are disabled in mock mode.
+
+Verify the chaos gate:
+```powershell
+python scripts\check_chaos.py --quick     # < 1 min, checks 1-4
+python scripts\check_chaos.py --full      # checks 1-7 including regression.py
+```
+
 ## Cleanup
 ```powershell
 Remove-Item .env; docker compose down        # keeps the Redis volume (queue + results survive the next `up`)

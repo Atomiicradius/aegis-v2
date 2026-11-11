@@ -172,6 +172,8 @@ Reading it: one retry per killed worker (its in-flight job; the lease is 10 s, t
 | `check_stats.py [--storm N]` (HOST) | poll `/api/cloud/stats` each second and print it |
 | `autoscaler.py` (HOST) | scale `worker` 2..8 by queue depth (up fast, down 1 step per cooldown) |
 | `check_trace.py [--skip-kill] [--skip-ab]` (HOST) | **Block 1** verify trace/timeline after a worker kill + A/B overhead measurement |
+| `chaos_agent.py [--enable] [--port 8099] [--api URL]` (HOST) | **Block 3** localhost fault-injection HTTP server; `--enable` arms `POST /run` |
+| `check_chaos.py [--quick\|--full]` (HOST) | **Block 3** gate: enqueued_total, integrity, timeline inject, chaos events, autoscaler events, regression |
 
 ```powershell
 docker compose build worker                          # REQUIRED after editing backend/ or scripts/ (baked into the image)
@@ -205,6 +207,17 @@ All observability work is strictly additive; existing endpoints, Redis keys, and
 - **Timeline dedup** (`backend/cloud/timeline.py`): replaced 30 s bucket with SET NX lock (`_OUTAGE_LOCK_TTL = 7 s`). Two outages 15 s apart produce two pairs; one outage seen by four workers produces one pair.
 - **Baseline throughput** (RECORD_TRACES=0 TIMELINE=0): reported by `check_trace.py --full` Test 3c.
 - **Running overhead total** (Blocks 1–3): reported at the end of `check_trace.py`.
+- **`enqueued_total` counter** (`backend/cloud/queue.py`): `Queue.submit()` increments `counters.enqueued` by however many jobs were actually queued (skipping existing). Exposed as `enqueued_total` in `GET /api/cloud/stats`.
+- **`GET /api/cloud/integrity`**: computes `enqueued − (completed + failed + depth + processing)` = leaked; `consistent=true` iff leaked == 0.
+- **`POST /api/cloud/timeline`**: external inject endpoint with `_TIMELINE_INJECT_WHITELIST` = `{scale_up, scale_down, chaos_inject, chaos_fault, chaos_recover, chaos_redis_kill, chaos_worker_kill}`. Non-whitelisted types → 422. Used by chaos_agent and autoscaler.
+- **`scripts/chaos_agent.py`**: localhost-only HTTP server (127.0.0.1:8099, stdlib only). `--enable` flag gates destructive `POST /run`; without it returns 403. CORS: `http://localhost:5173`. Endpoints: `GET /status`, `GET /scenarios`, `POST /run {scenario}`, `POST /abort`. Posts `chaos_fault`/`chaos_recover` timeline events. Scenarios: kill1/kill2/kill3 (worker_kill), redis_restart, redis_kill.
+- **`scripts/autoscaler.py` timeline events**: `--api` flag (empty = off). Posts `scale_up`/`scale_down` via `post_timeline()` on each scaling action (best-effort, never raises).
+- **`ChaosDock`** (`frontend/src/components/cloud/ChaosDock.tsx`): polls chaos_agent every 2 s; armed/read-only/offline status chip; scenario buttons colour-coded by kind; shows last 6 chaos timeline events; in mock mode synthesizes agent state.
+- **`IncidentTimeline`** (`frontend/src/components/cloud/IncidentTimeline.tsx`): inline SVG, glyph+label markers, newest-first up to 12 rows, three readouts (total, last type, most common type). Driven by `useTimeline()`.
+- **`useTimeline`** (`frontend/src/lib/useTimeline.ts`): incremental polling hook (2 s, `since_seq`); in mock mode uses scripted `mockTimelineEvents()`.
+- **`?mock=chaos`** (`frontend/src/lib/cloudMock.ts`): phase1 (t≥5 2 workers dead), phase2 (t≥25 redis outage), recovery (t≥35). `cloudMockTimeline.ts` returns scripted events matching the phases.
+- **`scripts/check_chaos.py`**: two-tier gate: `--quick` (checks 1–4: enqueued_total, integrity, inject whitelist, timeline read-back; <1 min) and `--full` (adds enqueued counter increment, autoscaler timeline events, regression.py).
+- **Redis keys added**: `counters.enqueued` (new field in existing `counters` hash).
 
 ## Gotchas
 - Same `--seed` re-run without a reset is a **no-op**: event ids repeat and finished jobs are skipped. Reset first (`--reset`).

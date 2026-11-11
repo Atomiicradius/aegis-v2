@@ -246,6 +246,8 @@ class Queue:
             pipe.zadd(self.k("jobs"), {job.event_id: payload["score"]})
             queued += 1
         pipe.execute()
+        if queued > 0:
+            self.r.hincrby(self.k("counters"), "enqueued", queued)
         return queued
 
     # --- worker side --------------------------------------------------

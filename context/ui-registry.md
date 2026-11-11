@@ -179,6 +179,31 @@ Not a visual component, but logged here per the usual pattern since every screen
 
 ---
 
+### IncidentTimeline (Block 3 — observability)
+
+File: `frontend/src/components/cloud/IncidentTimeline.tsx`
+
+Inline SVG timeline of system events, newest at top, capped at 12 visible rows. Each row: dot on a vertical axis line, glyph (11 px mono symbol) to the left of the dot coloured by event type, type label, source, relative time. Accepts `events: TimelineEvent[]` from `useTimeline`. Three readouts above the SVG: total events, last event type, most common type.
+
+| Property | Value |
+|---|---|
+| SVG viewBox | `0 0 640 <dynamic height>` |
+| Row height | 36 px |
+| Axis left offset | 56 px |
+| Dot radius | 5 px |
+| Glyph colours | `var(--color-danger)` for faults/down, `var(--color-success)` for recover/up, `var(--color-accent-light)` for scale_up, `var(--color-warning-light)` for scale_down, `var(--color-text-muted)` for neutral |
+| Font | `var(--font-mono)` |
+
+---
+
+### ChaosDock (Block 3 — observability)
+
+File: `frontend/src/components/cloud/ChaosDock.tsx`
+
+Fault-injection control panel. Polls `http://127.0.0.1:8099` (chaos_agent) every 2 s for status and scenario list. Status chip shows `armed` (enabled), `read-only` (no --enable), or `agent offline`. Scenario buttons colour-coded by kind: `worker_kill` = danger, `redis_restart` = warning, `redis_kill` = danger dark. In mock mode synthesizes fake agent status so the panel renders without the agent running. Receives `events: TimelineEvent[]` to show the most recent 6 chaos-related events at the bottom.
+
+---
+
 ## Patterns & Conventions
 
 Pre-populated starting points from `ui-tokens.md` / `ui-rules.md` — refine as you go:

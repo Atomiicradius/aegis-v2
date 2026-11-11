@@ -5,7 +5,7 @@
  */
 import type { CloudStats, CloudWorker } from './cloudApi';
 
-export const MOCK_SCENARIOS = ['idle', 'storm', 'scaled', 'critical', 'dead', 'down'] as const;
+export const MOCK_SCENARIOS = ['idle', 'storm', 'scaled', 'critical', 'dead', 'down', 'chaos'] as const;
 export type MockScenario = (typeof MOCK_SCENARIOS)[number];
 
 export function parseMockScenario(value: string | null): MockScenario | null {
@@ -81,7 +81,7 @@ function drain(t: number, liveAt: (u: number) => number): { depth: number; compl
 /** Stats for `scenario` at `t` seconds after the page opened (loops every 90 s). */
 export function mockStats(scenario: Exclude<MockScenario, 'down'>, elapsedSeconds: number): CloudStats {
   const t = elapsedSeconds % 90;
-  switch (scenario) {
+  switch (scenario as MockScenario) {
     case 'idle':
       return build({ t, alive: 2, depth: 0, completed: 0, throughput: 0 });
 
@@ -113,5 +113,24 @@ export function mockStats(scenario: Exclude<MockScenario, 'down'>, elapsedSecond
         retries: t >= 12 ? 1 : 0, critCount: 2,
       });
     }
+
+    case 'chaos': {
+      // 4 workers; chaos_agent kills 2 at t=5 s, redis restarts at t=25 s, workers recover by t=35 s.
+      const phase1 = t >= 5 && t < 25;    // 2 workers dead
+      const phase2 = t >= 25 && t < 35;   // redis outage
+      const alive = phase1 ? 2 : phase2 ? 2 : 4;
+      const dead = phase1 ? [2, 3] : phase2 ? [2, 3] : [];
+      return build({
+        t, alive, dead,
+        depth: Math.max(0, 500 - (phase1 ? 4.8 : phase2 ? 0 : 9.6) * t),
+        completed: 60 + (phase1 ? 4.8 : phase2 ? 2 : 9.6) * Math.min(t, 50),
+        throughput: phase2 ? 0 : alive * 2.4,
+        retries: t >= 15 ? Math.floor((t - 15) / 8) + 1 : 0,
+        critCount: t >= 10 ? 2 : 0,
+        policy: 'priority',
+      });
+    }
   }
+  // fallback (unreachable but satisfies TS exhaustiveness through the cast above)
+  return build({ t, alive: 2, depth: 0, completed: 0, throughput: 0 });
 }
