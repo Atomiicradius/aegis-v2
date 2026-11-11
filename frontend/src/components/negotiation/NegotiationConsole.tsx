@@ -49,7 +49,12 @@ function useCountUp(ref: React.RefObject<HTMLElement | null>, to: number) {
   }, [to]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
-export function NegotiationConsole({ messages }: { messages: NegotiationMessage[] }) {
+/**
+ * instant: render every row visible at once (no append animation). Negotiate streams one message at a
+ * time and animates the newest row in; /cloud mounts a finished transcript in one go, where that
+ * animation would leave all but the last row hidden. Default false = Negotiate behaviour unchanged.
+ */
+export function NegotiationConsole({ messages, instant = false }: { messages: NegotiationMessage[]; instant?: boolean }) {
   const latestRound = messages.reduce((highest, message) => Math.max(highest, message.round), 0);
   const validationCount = messages.filter((message) => message.agent_id === 'validation').length;
 
@@ -64,7 +69,7 @@ export function NegotiationConsole({ messages }: { messages: NegotiationMessage[
 
   /* ── tbody ref: animate newly appended rows ── */
   const tbodyRef = useRef<HTMLTableSectionElement>(null);
-  useAnimeAppend(tbodyRef, messages.length);
+  useAnimeAppend(tbodyRef, instant ? 0 : messages.length);
 
   return (
     <section className="mt-5 border border-border bg-surface-muted/75" aria-labelledby="negotiation-ledger-title">
@@ -129,7 +134,7 @@ export function NegotiationConsole({ messages }: { messages: NegotiationMessage[
                   <tr
                     key={message.id}
                     className={`align-top transition-colors duration-200 hover:bg-surface-secondary/40 ${isValidation ? 'bg-warning-muted/10' : ''}`}
-                    style={{ opacity: 0 }}
+                    style={instant ? undefined : { opacity: 0 }}
                   >
                     <td className={`border-r border-border px-3 py-4 font-mono text-[10px] ${isValidation ? 'border-l-2 border-l-warning text-warning-light' : 'text-text-muted'}`}>
                       {String(index + 1).padStart(3, '0')}

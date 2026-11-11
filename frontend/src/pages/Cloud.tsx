@@ -4,6 +4,7 @@ import { ClusterConstellation } from '../components/cloud/ClusterConstellation';
 import { CornerBrackets } from '../components/cloud/CornerBrackets';
 import { LeftRuleCallout } from '../components/cloud/LeftRuleCallout';
 import { PanelHeader } from '../components/cloud/PanelHeader';
+import { ResolutionRecords } from '../components/cloud/ResolutionRecords';
 import { Sparkline } from '../components/cloud/Sparkline';
 import { StatCell } from '../components/cloud/StatCell';
 import { StatusChip } from '../components/cloud/StatusChip';
@@ -235,6 +236,10 @@ export default function Cloud() {
             <Sparkline label="Throughput jobs/s" tone="success" data={history.map((h) => h.throughput)} current={s ? s.throughput_per_s.toFixed(1) : DASH} />
             <Sparkline label="Live workers" tone="warning-light" data={history.map((h) => h.live)} current={n(alive, 2)} format={(v) => String(Math.round(v))} />
           </section>
+
+          <div style={HIDDEN}>
+            <ResolutionRecords mock={mock} />
+          </div>
 
           <section className="grid gap-5 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]" style={HIDDEN}>
             <div className="border border-border bg-surface-muted/75">

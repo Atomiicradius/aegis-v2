@@ -5,7 +5,17 @@ import { Link } from 'react-router-dom';
 import { useAnimeEntry } from '../../lib/useAnimeEntry';
 import type { Resolution } from '../globe/types';
 
-export function ResolutionCard({ resolution }: { resolution: Resolution | null }) {
+/**
+ * showTrajectoryLink: Negotiate-only deep link; the cloud page hides it.
+ * residualAsDistance: the engine's `residual_risk` on APPROVED resolutions is really the minimum distance
+ * in km (validation_agent: min(expected miss, closest third party)), not a probability. Negotiate keeps
+ * printing it as a percent (unchanged); the cloud page passes true to print it as a distance.
+ */
+export function ResolutionCard({ resolution, showTrajectoryLink = true, residualAsDistance = false }: {
+  resolution: Resolution | null;
+  showTrajectoryLink?: boolean;
+  residualAsDistance?: boolean;
+}) {
   const cardRef = useRef<HTMLElement>(null);
 
   /* ── card slide-up + fade when resolution appears ── */
@@ -14,7 +24,7 @@ export function ResolutionCard({ resolution }: { resolution: Resolution | null }
   /* ── yield-score count-up ── */
   const yieldRef = useRef<HTMLElement>(null);
   useEffect(() => {
-    if (!resolution || !yieldRef.current) return;
+    if (!resolution || !yieldRef.current || residualAsDistance) return;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
     const target = resolution.residual_risk * 100;
@@ -87,7 +97,7 @@ export function ResolutionCard({ resolution }: { resolution: Resolution | null }
         <div className="border-b border-current/20 p-5 lg:border-b-0 lg:border-r">
           <p className="font-mono text-[8px] uppercase tracking-wider opacity-70">Resolution rationale</p>
           <p className="mt-3 max-w-[60ch] text-sm leading-6 text-text-secondary">{resolution.rationale_text}</p>
-          {isSuccess && (
+          {isSuccess && showTrajectoryLink && (
             <Link
               to={`/negotiate/${resolution.conjunction_id}/trajectory`}
               className="mt-6 inline-flex border-b border-current pb-1 font-mono text-[10px] font-semibold uppercase tracking-wider transition-opacity hover:opacity-70 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent"
@@ -104,7 +114,9 @@ export function ResolutionCard({ resolution }: { resolution: Resolution | null }
               { label: 'Maneuver type',     value: resolution.maneuver_type,     ref: undefined },
               { label: 'Delta-V',           value: `${resolution.delta_v_mps.toFixed(3)} m/s`, ref: deltaVRef },
               { label: 'Expected miss',     value: `${resolution.expected_min_distance_km.toFixed(3)} km`, ref: undefined },
-              { label: 'Residual risk',     value: `${(resolution.residual_risk * 100).toExponential(2)}%`, ref: yieldRef },
+              residualAsDistance
+                ? { label: 'Residual min distance', value: `${resolution.residual_risk.toFixed(3)} km`, ref: undefined }
+                : { label: 'Residual risk',     value: `${(resolution.residual_risk * 100).toExponential(2)}%`, ref: yieldRef },
               { label: 'Execution UTC',     value: resolution.execution_time_utc, ref: undefined },
             ].map(({ label, value, ref: cellRef }) => (
               <div key={label} className="min-w-0 bg-surface-muted p-4">

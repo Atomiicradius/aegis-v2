@@ -103,6 +103,36 @@ return {requeued, failed}
 """
 
 
+# record: keep the full negotiation record of a finished job, bounded in size.
+#   transcript:<id>     JSON {summary, transcript, resolution}, expires after TTL (2 h)
+#   recent_transcripts  LIST of summary JSON, newest first, at most WINDOW entries
+#   recent_critical     LIST of summary JSON of critical jobs, newest first, at most 10
+# Pushing and trimming happen in one atomic script. A job that falls out of the window loses its
+# transcript key (unless it was critical: criticals keep theirs until the TTL), so memory stays
+# bounded however big the storm is.
+_RECORD_LUA = """
+-- KEYS: transcript, recent_transcripts, recent_critical
+-- ARGV: record_json, summary_json, is_critical('1'/'0'), ttl_seconds, window, ns, critical_cap
+redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[4]))
+redis.call('LPUSH', KEYS[2], ARGV[2])
+local window = tonumber(ARGV[5])
+for _, raw in ipairs(redis.call('LRANGE', KEYS[2], window, -1)) do      -- entries beyond the window
+  local row = cjson.decode(raw)
+  if not row.is_critical then redis.call('DEL', ARGV[6] .. 'transcript:' .. row.event_id) end
+end
+redis.call('LTRIM', KEYS[2], 0, window - 1)
+if ARGV[3] == '1' then
+  redis.call('LPUSH', KEYS[3], ARGV[2])
+  redis.call('LTRIM', KEYS[3], 0, tonumber(ARGV[7]) - 1)
+end
+return 1
+"""
+
+TRANSCRIPT_TTL_S = 2 * 3600
+TRANSCRIPT_WINDOW = 30
+CRITICAL_KEEP = 10
+
+
 class Queue:
     def __init__(self, url: str | None = None, ns: str = "",
                  lease_seconds: float | None = None, max_retries: int | None = None) -> None:
@@ -119,6 +149,7 @@ class Queue:
         self._pop = self.r.register_script(_POP_LUA)
         self._complete = self.r.register_script(_COMPLETE_LUA)
         self._reap = self.r.register_script(_REAP_LUA)
+        self._record = self.r.register_script(_RECORD_LUA)
 
     def k(self, name: str) -> str:
         return self.ns + name
@@ -178,6 +209,32 @@ class Queue:
                                     "recent", "worker_done")]
         return bool(self._complete(keys=keys, args=[json.dumps(result), job_id, field,
                                                     result.get("worker_id", "")]))
+
+    def record(self, summary: dict, transcript: list, resolution: dict) -> None:
+        """Store the full record of a job whose complete() this worker just won (see _RECORD_LUA)."""
+        jid = summary["event_id"]
+        self._record(
+            keys=[self.k("transcript:" + jid), self.k("recent_transcripts"), self.k("recent_critical")],
+            args=[json.dumps({"summary": summary, "transcript": transcript, "resolution": resolution}),
+                  json.dumps(summary), "1" if summary.get("is_critical") else "0",
+                  TRANSCRIPT_TTL_S, TRANSCRIPT_WINDOW, self.ns, CRITICAL_KEEP])
+
+    def recent_summaries(self, limit: int) -> list[dict]:
+        """Newest-first summary rows for the UI: the last `limit` completed jobs, plus up to 3 of the
+        newest critical jobs that already scrolled out of that view (so the priority lane stays
+        visible after a storm). One pipelined round trip: two LRANGE, no SCAN/KEYS."""
+        pipe = self.r.pipeline(transaction=False)
+        pipe.lrange(self.k("recent_transcripts"), 0, limit - 1)
+        pipe.lrange(self.k("recent_critical"), 0, 2)
+        newest, crit = pipe.execute()
+        rows = [json.loads(x) for x in newest]
+        shown = {r["event_id"] for r in rows}
+        pinned = [c for c in (json.loads(x) for x in crit) if c["event_id"] not in shown]
+        return (rows[:max(0, limit - len(pinned))] + pinned)[:limit]
+
+    def get_record(self, job_id: str) -> dict | None:
+        raw = self.r.get(self.k("transcript:" + job_id))
+        return json.loads(raw) if raw else None
 
     def reap(self) -> tuple[int, int]:
         """Requeue (or fail) expired leases. Returns (requeued, failed)."""

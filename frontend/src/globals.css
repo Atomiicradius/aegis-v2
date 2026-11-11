@@ -472,3 +472,14 @@ html.custom-cursor-active * {
 .cloud-brackets > i:nth-child(2) { top: -1px; right: -1px; border-top-width: 2px; border-right-width: 2px; }
 .cloud-brackets > i:nth-child(3) { bottom: -1px; left: -1px; border-bottom-width: 2px; border-left-width: 2px; }
 .cloud-brackets > i:nth-child(4) { bottom: -1px; right: -1px; border-bottom-width: 2px; border-right-width: 2px; }
+
+/* /cloud reuses the Negotiate transcript components (8-12 px type). Inside .cloud-legible lift that
+   micro type to the page's 14 px floor and widen the fixed-width columns to match; the components
+   themselves are untouched, so Negotiate looks exactly as before. */
+.cloud-legible :is(.text-\[8px\], .text-\[9px\], .text-\[10px\], .text-\[11px\], .text-xs) { font-size: 14px; line-height: 1.5; }
+.cloud-legible th.w-14 { width: 4.25rem; }
+.cloud-legible th.w-16 { width: 4.75rem; }
+.cloud-legible th.w-24 { width: 7.5rem; }
+.cloud-legible th.w-28 { width: 8.5rem; }
+.cloud-legible th.w-32 { width: 9.5rem; }
+.cloud-legible th.w-40 { width: 11rem; }

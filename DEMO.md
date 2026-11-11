@@ -63,6 +63,8 @@ While the queue is still deep (start a fresh storm if needed): click **Inject 3 
 Look at: **Critical latency** tile (orange) avg ~0.5 s while normal latency is many seconds. The `jobs` count there also includes normal events
 whose risk happened to be >= 0.8 - they are critical by definition and priority picks them first. Compare: reset, run **Storm 800 (fifo)**, inject 3 critical -> they wait for the whole queue (tens of seconds).
 
+**Resolution records** (React `/cloud`, panel under the sparklines): every finished job appears as a row (object pair with real satellite names, miss km, risk, rounds, outcome, delta-v, latency), newest first, updated every 2 s. The injected critical jobs are marked with the **amber rule + dot + CRITICAL chip** and stay pinned at the bottom of the table after the storm moves on. Move the pointer over the table to freeze it; click **open →** on a row to see the full negotiation transcript and the final decision record (the same components as the Negotiate page). Say: "each row is a real negotiation the workers ran: real satellites, synthetic close approach". A row whose transcript is older than 2 h shows "Transcript expired". Needs the `api` + `worker` image rebuilt after pulling (`docker compose build`).
+
 ## 5. Kill a worker (use a deep queue; needs the autoscaler STOPPED)
 ```powershell
 # window B: Ctrl+C the autoscaler. If it keeps running it restarts the killed container within 2 s and no dead worker shows.

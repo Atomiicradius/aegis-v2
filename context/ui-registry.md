@@ -104,7 +104,7 @@ Built in `frontend/src/pages/History.tsx` — archive briefing + derived record 
 
 Header strip also shows `objects / NNN` (zero-padded `pool_size` from the stats API; `--` when absent). The scope callout and footer state: real satellites and orbits, synthetic close approaches.
 
-Files: `frontend/src/pages/Cloud.tsx`, `frontend/src/components/cloud/*`, `frontend/src/lib/{cloudApi,cloudMock,useCloudStats}.ts`
+Files: `frontend/src/pages/Cloud.tsx`, `frontend/src/components/cloud/*`, `frontend/src/lib/{cloudApi,cloudMock,cloudMockRecords,useCloudStats,useCloudRecords}.ts`
 Last updated: 2026-11-10
 
 | Property | Class / pattern |
@@ -119,6 +119,8 @@ Last updated: 2026-11-10
 **ClusterConstellation** (the hero): queue = glowing core with depth numeral and a particle swirl that thickens with depth; 8 worker slots on 3 orbit rings (angles from a min-spacing search, rigid drift so labels never touch). Real-data mapping: throughput -> blue job-packet rate; alive workers -> lit nodes (newly lit slots boot in sequence, 260 ms apart, green boot ring); a rise in `critical_latency_ms.count` -> amber diamond packets crossing the swirl + amber core ring + "PRIORITY LANE +N"; a worker with `alive:false` -> red node, X, flickering broken ring, stays visible; a rise in `retries_total` -> dashed red square packet from the dead node to a live one (re-claim); a jump in queue depth -> inbound ingest ring. Documented limit: critical packets are inferred from the critical-count delta, not per-job events.
 
 **Offline / mock:** link failure renders a History-style `border-l-2 border-danger` block ("CLUSTER LINK DOWN", what to check, auto-retry) and dims the scope. `/cloud?mock=idle|storm|scaled|critical|dead|down` feeds scripted stats through the same hook for QA; an amber "MOCK DATA" chip is shown and the mock code path never runs without the param.
+
+**Resolution records** (`ResolutionRecords.tsx` + `RecordDetail.tsx`, data via `lib/useCloudRecords.ts`, mock rows in `lib/cloudMockRecords.ts`): History-ledger-style table (REC, OBJECT PAIR with real satellite names, MISS KM, RISK, ROUNDS, OUTCOME chip, ΔV, LATENCY, `open →`), 10 rows, newest first, polled every 2 s and frozen while the pointer/focus is inside the table. Critical rows = amber left rule + amber square + CRITICAL chip + amber risk/latency, never a filled row. Click opens `RecordDetail` below the table, which REUSES the Negotiate components `NegotiationConsole` (new optional prop `instant`: rows visible at once, no append animation) and `ResolutionCard` (new optional props `showTrajectoryLink={false}`, `residualAsDistance`: the engine's residual_risk is a km distance on approved resolutions). A `.cloud-legible` wrapper (globals.css) lifts their 8-12 px type to the page's 14 px floor without touching Negotiate. States: empty (left-rule callout), feed stale, loading, transcript expired (404, warning callout), unavailable (danger callout). Mock: `?mock=critical|dead` include critical rows and one pinned expired-transcript row.
 
 **Control dock:** a sticky bottom bar (Storm 800 priority/fifo, Inject 3 critical, Reset with `window.confirm`), disabled while a request is in flight, last-action status line.
 

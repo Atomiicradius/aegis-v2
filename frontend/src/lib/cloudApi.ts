@@ -4,6 +4,8 @@
  * a "link down" state instead of crashing.
  */
 
+import type { NegotiationMessage, Resolution } from '../components/globe/types';
+
 export const CLOUD_API: string = (
   import.meta.env.VITE_CLOUD_API ?? 'http://localhost:8010'
 ).replace(/\/$/, '');
@@ -34,6 +36,35 @@ export type CloudStats = {
   pool_size?: number;
   pool_groups?: Record<string, number>;
 };
+
+/** One row of GET /api/cloud/recent (a finished job; summaries only, no transcript). */
+export type CloudRecentRow = {
+  event_id: string;
+  primary_id: string;
+  secondary_id: string;
+  primary_name: string;
+  secondary_name: string;
+  miss_km: number;
+  risk: number;
+  is_critical: boolean;
+  rounds: number;
+  resolution_status: string;
+  maneuvering_agent: string;
+  delta_v_mps: number;
+  latency_ms: number;
+  finished_at: string;
+};
+
+/** GET /api/cloud/resolution/{id}: same shapes the Negotiate page renders. */
+export type CloudResolution = {
+  event_id: string;
+  summary: CloudRecentRow;
+  transcript: NegotiationMessage[];
+  resolution: Resolution;
+};
+
+/** Error string of a 404 from /resolution: the transcript expired (2 h TTL) or never existed. */
+export const EXPIRED = 'HTTP 404';
 
 export type StormPolicy = 'fifo' | 'priority';
 
@@ -87,6 +118,23 @@ export async function fetchCloudStats(signal?: AbortSignal): Promise<Result<Clou
   return isCloudStats(result.data)
     ? { ok: true, data: result.data }
     : { ok: false, error: 'unexpected stats payload' };
+}
+
+export async function fetchCloudRecent(limit = 10, signal?: AbortSignal): Promise<Result<CloudRecentRow[]>> {
+  const result = await request(`/api/cloud/recent?limit=${limit}`, { signal });
+  if (!result.ok) return result;
+  return Array.isArray(result.data)
+    ? { ok: true, data: result.data as CloudRecentRow[] }
+    : { ok: false, error: 'unexpected recent payload' };
+}
+
+export async function fetchCloudResolution(eventId: string, signal?: AbortSignal): Promise<Result<CloudResolution>> {
+  const result = await request(`/api/cloud/resolution/${encodeURIComponent(eventId)}`, { signal });
+  if (!result.ok) return result;
+  const d = result.data;
+  return isRecord(d) && Array.isArray(d.transcript) && isRecord(d.resolution)
+    ? { ok: true, data: d as unknown as CloudResolution }
+    : { ok: false, error: 'unexpected resolution payload' };
 }
 
 export const postStorm = (req: StormRequest) => post('/api/cloud/storm', req);

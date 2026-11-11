@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import os
 import random
 import statistics
@@ -25,9 +26,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from redis.exceptions import RedisError
 
@@ -55,7 +56,6 @@ POOL = pool_summary(load_all_tracked_objects())   # loaded once at start-up (rea
 
 @app.exception_handler(RedisError)
 def _redis_down(request, exc):
-    from fastapi.responses import JSONResponse
     # Any Redis failure (down, restarting, loading) -> a clean 503 the UI turns into "CLUSTER LINK DOWN".
     # The next request reconnects by itself; nothing to restart.
     return JSONResponse({"error": "redis_unavailable", "detail": str(exc)}, status_code=503)
@@ -76,6 +76,24 @@ def _latency(results: list[dict]) -> dict:
 @app.get("/")
 def dashboard() -> FileResponse:
     return FileResponse(STATIC / "index.html")
+
+
+@app.get("/api/cloud/recent")
+def recent(limit: int = Query(10, ge=1, le=30)) -> list[dict]:
+    """Last `limit` finished jobs, newest first (+ up to 3 older critical ones). Rows are summaries only."""
+    return q.recent_summaries(limit)
+
+
+_EVENT_ID = re.compile(r"^[0-9a-f-]{36}$")
+
+
+@app.get("/api/cloud/resolution/{event_id}")
+def resolution(event_id: str):
+    """Full transcript + resolution of one finished job; 404 JSON once its 2 h TTL has expired."""
+    record = q.get_record(event_id) if _EVENT_ID.match(event_id) else None
+    if record is None:
+        return JSONResponse({"error": "not_found", "detail": "transcript expired or unknown event id"}, status_code=404)
+    return {"event_id": event_id, **record}
 
 
 @app.get("/api/cloud/stats")

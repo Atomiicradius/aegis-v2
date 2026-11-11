@@ -41,9 +41,12 @@ def run_one(q: Queue, worker_id: str, stored: dict) -> None:
     started_at = _iso()
     try:
         outcome = process_job(job)
+        # The full record goes to Redis separately (record()); result:<id> must stay small.
+        record = {k: outcome.pop(k) for k in ("transcript", "resolution", "primary_name", "secondary_name")}
     except Exception as exc:  # noqa: BLE001 - record the failure, still complete the job
         outcome = {"resolution_status": "error", "error": repr(exc),
                    "llm_mode": os.environ.get("LLM_MODE", "real"), "fallbacks_used": 0}
+        record = None
     result = {
         **outcome,
         "event_id": job.event_id,
@@ -59,7 +62,28 @@ def run_one(q: Queue, worker_id: str, stored: dict) -> None:
     # complete() lands (never drop it, never exit). If its lease expired meanwhile, the reaper may
     # requeue the job: complete() still wins (SET NX) and removes the requeued copy; the worst case
     # is one duplicate execution, which `retries_total` shows.
-    retry(lambda: q.complete(job.event_id, result), f"worker {worker_id}")
+    stored = retry(lambda: q.complete(job.event_id, result), f"worker {worker_id}")
+    # RECORD_TRANSCRIPTS=0 switches the record feature off (kill switch); only the first completion records.
+    if stored and record and os.environ.get("RECORD_TRANSCRIPTS", "1") != "0":
+        _record(q, worker_id, job, result, record)
+
+
+def _record(q: Queue, worker_id: str, job: Job, result: dict, record: dict) -> None:
+    """Best effort: the transcript is a nicety, the result is already safe. Never block the worker for long."""
+    finished, enq = datetime.fromisoformat(result["finished_at"]), datetime.fromisoformat(job.enqueued_at)
+    summary = {
+        "event_id": job.event_id, "primary_id": job.primary_id, "secondary_id": job.secondary_id,
+        "primary_name": record["primary_name"], "secondary_name": record["secondary_name"],
+        "miss_km": job.miss_distance_km, "risk": round(job.risk, 3), "is_critical": job.is_critical,
+        "rounds": result.get("rounds", 0), "resolution_status": result["resolution_status"],
+        "maneuvering_agent": result.get("maneuvering_agent", ""), "delta_v_mps": result.get("delta_v_mps", 0.0),
+        "latency_ms": round((finished - enq).total_seconds() * 1000), "finished_at": result["finished_at"],
+    }
+    try:
+        retry(lambda: q.record(summary, record["transcript"], record["resolution"]),
+              f"worker {worker_id}", max_wait_s=20)
+    except RETRYABLE:
+        pass
 
 
 def main() -> None:

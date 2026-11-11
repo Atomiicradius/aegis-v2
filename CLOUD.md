@@ -17,6 +17,9 @@ workers pull jobs from Redis and call it. Commands are PowerShell, run from the 
 | `recent` | list | last 1000 completed ids, newest first (stats API window) |
 | `worker_done` | hash | worker_id -> jobs completed |
 | `meta:policy` | string | policy used by the last enqueue/storm (dashboard) |
+| `transcript:<id>` | string | `{summary, transcript, resolution}` of a finished job, **TTL 2 h**; kept for every critical job and for the last 30 finished jobs (deleted when a normal job leaves that window) |
+| `recent_transcripts` | list | summary JSON of the last 30 finished jobs, newest first (trimmed in the same atomic script that stores the transcript) |
+| `recent_critical` | list | summary JSON of the last 10 critical jobs, newest first |
 
 `<id>` = `event_id` = uuid5(sorted pair + `tca_utc`), so the same encounter always has the same id.
 
@@ -46,7 +49,7 @@ One job at a time per process (needed for `fallbacks_used`). Heartbeat in a daem
 Live worker = heartbeat < 10 s old; dead = registered but silent >= 10 s.
 
 ## API + dashboard (`backend/cloud/api.py`, compose service `api`, http://localhost:8010)
-`GET /` dashboard; `GET /api/cloud/stats` (fixed key contract; **added** `pool_size` (int) and `pool_groups` ({group: count}) - existing keys unchanged); `POST /api/cloud/storm {n,critical,critical_after_s,policy}`, `/critical {k}`, `/reset` (FLUSHDB). Details and demo flow: DEMO.md.
+`GET /` dashboard; `GET /api/cloud/recent?limit=10`, `GET /api/cloud/resolution/{event_id}` (see Resolution records); `GET /api/cloud/stats` (fixed key contract; **added** `pool_size` (int) and `pool_groups` ({group: count}) - existing keys unchanged); `POST /api/cloud/storm {n,critical,critical_after_s,policy}`, `/critical {k}`, `/reset` (FLUSHDB). Details and demo flow: DEMO.md.
 
 ## Satellite pool (EVENT_POOL=pool)
 **Real satellites, real orbits, synthetic close approaches.** The storm picks random pairs from ~400 real LEO satellites
@@ -57,6 +60,16 @@ the miss distance and time to closest approach of each event are invented. Nothi
 - Derived operator profiles per constellation (`profiles._GROUP_PROFILES`, hashlib-stable): Starlink low MVI / big fuel / dv 3-4, OneWeb mid, Iridium higher MVI, stations high MVI. `KNOWN_OPERATOR_PROFILES` untouched. Transcripts use the real TLE names (`ONEWEB-0149`, ...). The profile numbers are illustrative, not operator data.
 - **Validation cost** (`process_job`, LLM_MODE=off, 50 seeded jobs, mean ms): full-pool validation grows with the pool (15 objects 3.1, 100: 19.8, 250: 49.0, 400: **79.6**); curated+pair is flat 3.5 but ignores the pool; `bounded` (curated + pair + 50 nearest-orbit objects, mean motion then inclination) is **13.9 ms / p95 14.6** at 400. Default = `bounded`. Trade-off: a maneuver is screened against the 15 curated objects + 50 orbit neighbours, not all 400 (the far ones cannot reach the pair's orbit anyway).
 - Old API without the pool keys, or no pool file: `/cloud` shows `objects / --` or 006.
+
+## Resolution records (Task C)
+What the system DECIDED, not only how fast. `process_job` returns the full negotiation next to its summary: `transcript` (list of `NegotiationMessage`, JSON identical to what the Negotiate page renders), `resolution` (`Resolution`), `primary_name`, `secondary_name`. The worker pops those four out before building `result:<id>` (so it stays small) and, only when its `complete()` was the first one (duplicates never record twice), calls `Queue.record()`: ONE atomic Lua script that SETs `transcript:<id>` (EX 2 h), LPUSHes the summary onto `recent_transcripts`, deletes the transcript of any normal job that fell out of the 30-job window, trims the list, and, for a critical job, also pushes onto `recent_critical` (last 10). Memory is bounded however big the storm is (about 30 + 10 transcripts of ~2.3 KB). `record()` is best effort: a failure (Redis down >20 s) skips the transcript, never the result. `RECORD_TRANSCRIPTS=0` switches recording off.
+Measured cost: `record()` 0.69 ms per job (against ~320 ms stub jobs); 200-job, 2-worker throughput with records on vs off: 6.16 vs 6.16 jobs/s.
+
+- `GET /api/cloud/recent?limit=10` (1..30). Rows, newest first: `{event_id, primary_id, secondary_id, primary_name, secondary_name, miss_km, risk, is_critical, rounds, resolution_status, maneuvering_agent, delta_v_mps, latency_ms, finished_at}`. The last `limit` finished jobs, plus up to 3 of the newest critical jobs that already scrolled out of that view (appended at the bottom, so the priority lane stays visible after a storm). One pipelined round trip, two LRANGE, no SCAN/KEYS.
+- `GET /api/cloud/resolution/{event_id}` -> `{event_id, summary, transcript, resolution}`; **404** `{"error":"not_found","detail":...}` once the TTL expired, if it never existed or if the id is malformed.
+- Redis down: both return the same `503 {"error":"redis_unavailable"}` as every other endpoint.
+- Semantics note: for an APPROVED resolution the engine's `residual_risk` is a **distance in km** (`min(expected miss, closest third party)`), not a probability. The Negotiate page prints it as a percent (unchanged); `/cloud` shows it as "Residual min distance" (`ResolutionCard residualAsDistance`).
+- The transcripts are the deterministic template narration (`LLM_MODE=stub`), real satellite names, synthetic close approaches. No real-LLM text.
 
 ## Persistence and Redis outages (Task B)
 **Persistence.** Redis runs `redis-server --appendonly yes --appendfsync everysec` with its data on the named volume `redis-data`.
@@ -100,6 +113,7 @@ Reading it: one retry per killed worker (its in-flight job; the lease is 10 s, t
 | `CRITICAL_THRESHOLD` | `0.8` | `is_critical` |
 | `EVENT_POOL` | code `curated`; image/compose `pool` | `pool` = ~400 real LEO satellites from `tle_pool.json`; `curated` = the 15-object snapshot (6 usable). Missing pool file -> loud warning + curated |
 | `VALIDATION_SET` | `bounded` | which objects the safety validation screens against: `full` \| `curated` \| `bounded` |
+| `RECORD_TRANSCRIPTS` | `1` | `0` = the worker does not store transcripts / recent rows (kill switch) |
 | `VALIDATION_K` | `50` | `bounded`: nearest-orbit objects added to curated + the pair |
 
 ## Scripts (`docker compose run --rm worker python scripts/<x>.py ...` unless HOST)

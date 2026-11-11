@@ -153,4 +153,10 @@ def process_job(job: Job | dict, *, force_rejection: bool = False) -> dict:
         "duration_ms": round((time.perf_counter() - t0) * 1000.0, 2),
         "llm_mode": mode,
         "fallbacks_used": LLM_COUNTERS[mode]["fallbacks"] - fallbacks_before,
+        # The full record, in exactly the shape the Negotiate page renders (NegotiationMessage[] /
+        # Resolution). The worker pops these four out before building result:<id>, so that key stays small.
+        "primary_name": sat_a.name,
+        "secondary_name": sat_b.name,
+        "transcript": [m.model_dump(mode="json") for m in transcript],
+        "resolution": resolution.model_dump(mode="json"),
     }

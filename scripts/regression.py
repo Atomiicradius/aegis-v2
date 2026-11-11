@@ -61,6 +61,9 @@ else:
     sys.exit("API never answered on " + a.api)
 
 call("/api/cloud/reset", {})
+# Jobs that were in flight at the first flush finish AFTER it and add stray completions; let them land, flush again.
+time.sleep(2)
+call("/api/cloud/reset", {})
 for _ in range(20):          # heartbeats re-register within ~2 s after the FLUSHDB
     if live_workers() >= 2:
         break
