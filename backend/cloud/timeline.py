@@ -2,15 +2,17 @@
 timeline.py — system-level event log.
 
 Redis contract (global keys, no namespace prefix):
-  timeline                LIST   LPUSH + LTRIM to 2000; newest first
-  timeline:seq            STRING INCR for monotonic ordering
-  timeline:outage:<ts_s>  STRING (NX, 120 s TTL) — dedup redis_down per second
+  timeline               LIST   LPUSH + LTRIM to 2000; newest first
+  timeline:seq           STRING INCR for monotonic ordering
+  timeline:outage:lock   STRING SET NX, 7 s TTL — one per event type, dedup redis_down
+  timeline:recovery:lock STRING SET NX, 7 s TTL — one per event type, dedup redis_up
 
 Kill switch: TIMELINE=0 disables all writes (default on).
 
 emit() never raises and never blocks. If Redis is unreachable, events are buffered
 in memory (up to 200, with original timestamps) and flushed on the next successful call.
-redis_down/redis_up are deduplicated across workers via SET NX on the outage key.
+redis_down/redis_up are deduplicated across workers via SET NX on a per-event-type lock.
+Two outages more than _OUTAGE_LOCK_TTL seconds apart each produce their own pair.
 """
 
 from __future__ import annotations
@@ -29,9 +31,9 @@ _LIST_CAP = 2000
 
 _buffer: list[dict] = []
 _buffer_lock = threading.Lock()
-# Track outage/recovery timestamps already in the buffer (in-process dedup while Redis is down).
-_outage_buffered: set[int] = set()
-_recovery_buffered: set[int] = set()
+# In-process dedup while Redis is down: True means we already have that event type buffered.
+_outage_buffered: bool = False
+_recovery_buffered: bool = False
 
 
 def _now_ts() -> float:
@@ -50,7 +52,8 @@ def _write_one(r, event: dict) -> None:
 
 
 def _flush_buffer(r) -> None:
-    """Flush buffered events (oldest first). Dedup redis_down and redis_up via SET NX."""
+    """Flush buffered events (oldest first). Dedup redis_down and redis_up via SET NX lock."""
+    global _outage_buffered, _recovery_buffered
     with _buffer_lock:
         pending = list(_buffer)
         pending_len = len(pending)
@@ -58,18 +61,16 @@ def _flush_buffer(r) -> None:
         return
     for event in pending:
         if event.get("type") == "redis_down":
-            ts_key = _outage_bucket(event.get("ts", 0))
-            if not r.set(f"timeline:outage:{ts_key}", "1", nx=True, ex=120):
+            if not r.set("timeline:outage:lock", "1", nx=True, ex=_OUTAGE_LOCK_TTL):
                 continue
         elif event.get("type") == "redis_up":
-            ts_key = _outage_bucket(event.get("detail", {}).get("outage_started_ts", 0))
-            if not r.set(f"timeline:recovery:{ts_key}", "1", nx=True, ex=120):
+            if not r.set("timeline:recovery:lock", "1", nx=True, ex=_OUTAGE_LOCK_TTL):
                 continue
         _write_one(r, event)
     with _buffer_lock:
         del _buffer[:pending_len]
-        _outage_buffered.clear()
-        _recovery_buffered.clear()
+        _outage_buffered = False
+        _recovery_buffered = False
 
 
 def emit(r, type_: str, source: str, detail: dict | None = None,
@@ -96,50 +97,44 @@ def emit(r, type_: str, source: str, detail: dict | None = None,
                 _buffer.append(event)
 
 
-_DEDUP_BUCKET_S = 30  # workers detecting the same outage bucket into the same key
-
-
-def _outage_bucket(ts: float) -> int:
-    return int(ts // _DEDUP_BUCKET_S)
+_OUTAGE_LOCK_TTL = 7  # seconds; two outages >7 s apart each get their own pair
 
 
 def emit_redis_down(r, ts_down: float) -> None:
-    """Emit redis_down event, deduped per 30-s bucket across workers via SET NX."""
+    """Emit redis_down, deduped with a per-type SET NX lock (TTL=_OUTAGE_LOCK_TTL)."""
+    global _outage_buffered
     if not TIMELINE_ON:
         return
-    ts_key = _outage_bucket(ts_down)
-    dedup_key = f"timeline:outage:{ts_key}"
     event: dict[str, Any] = {
         "seq": 0, "ts": ts_down, "type": "redis_down", "source": "worker", "detail": {},
     }
     try:
-        if r.set(dedup_key, "1", nx=True, ex=120):
+        if r.set("timeline:outage:lock", "1", nx=True, ex=_OUTAGE_LOCK_TTL):
             _write_one(r, event)
     except RedisError:
         with _buffer_lock:
-            if ts_key not in _outage_buffered and len(_buffer) < _BUFFER_MAX:
-                _outage_buffered.add(ts_key)
+            if not _outage_buffered and len(_buffer) < _BUFFER_MAX:
+                _outage_buffered = True
                 _buffer.append(event)
 
 
 def emit_redis_up(r, ts_down: float) -> None:
-    """Emit redis_up, deduped per 30-s bucket across workers via SET NX. Flushes buffer first."""
+    """Emit redis_up, deduped with a per-type SET NX lock. Flushes buffer first."""
+    global _recovery_buffered
     if not TIMELINE_ON:
         return
-    ts_key = _outage_bucket(ts_down)
-    dedup_key = f"timeline:recovery:{ts_key}"
     event: dict[str, Any] = {
         "seq": 0, "ts": _now_ts(), "type": "redis_up", "source": "worker",
         "detail": {"outage_started_ts": ts_down},
     }
     try:
         _flush_buffer(r)  # flush redis_down (and any other buffered events) first
-        if r.set(dedup_key, "1", nx=True, ex=120):
+        if r.set("timeline:recovery:lock", "1", nx=True, ex=_OUTAGE_LOCK_TTL):
             _write_one(r, event)
     except RedisError:
         with _buffer_lock:
-            if ts_key not in _recovery_buffered and len(_buffer) < _BUFFER_MAX:
-                _recovery_buffered.add(ts_key)
+            if not _recovery_buffered and len(_buffer) < _BUFFER_MAX:
+                _recovery_buffered = True
                 _buffer.append(event)
 
 

@@ -1,4 +1,4 @@
-"""Block-1 check: verify trace recording and timeline events.
+"""Block-1/3 check: verify trace recording, timeline dedup, and overhead.
 
 Usage:
     python scripts/check_trace.py [--quick] [--api http://localhost:8010]
@@ -6,12 +6,15 @@ Usage:
 --quick  (< 1 min target):
     4 workers, LEASE_SECONDS=5, 30 jobs (LLM_STUB_MS=50), one worker kill.
     Full assertion set: two attempts on different workers, lease_expired then
-    completed, timeline events. Skips the Redis-restart dedup test.
+    completed, timeline events. Skips the Redis-restart dedup tests (2a-2e).
     Overhead: microbenchmark (Tracer + timeline, 2000 iterations) + a short
     single-worker throughput A/B (1 worker, 60 jobs, LLM_STUB_MS=50).
 
-Full mode (default, ~3–5 min):
-    Same worker-kill test + Redis-restart dedup test + same overhead check.
+Full mode (default, ~3-5 min):
+    Same worker-kill test + Redis-restart dedup tests:
+      2a-2c: single outage -> one pair (original Block-1 test)
+      2d-2e: two outages 15 s apart -> two pairs (Block-3 SET NX lock test)
+    + Test 3c: baseline throughput (RECORD_TRACES=0 TIMELINE=0)
     Gate before tagging: also run scripts/regression.py and verify_queue.py.
 
 Run from the repo root on the HOST.
@@ -19,6 +22,7 @@ Requires at least 2 worker containers running.
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -97,7 +101,7 @@ else:
 
     victim = workers[-1]
     subprocess.run(["docker", "kill", victim], capture_output=True)
-    print(f"  Killed worker {victim[:12]}; waiting for requeue + completion …")
+    print(f"  Killed worker {victim[:12]}; waiting for requeue + completion ...")
 
     drained = wait_drain(N_KILL, timeout=60)
     check("1a. all jobs complete after kill", drained)
@@ -147,10 +151,10 @@ if not a.quick:
     api("/api/cloud/storm", {"n": 30, "critical": 0, "policy": "fifo"})
     time.sleep(2)
     compose("stop", "redis")
-    print("  Stopped Redis; waiting 5 s for workers to detect the outage …")
+    print("  Stopped Redis; waiting 5 s for workers to detect the outage ...")
     time.sleep(5)
     compose("start", "redis")
-    print("  Started Redis; polling up to 60 s for API + workers to recover and flush events …")
+    print("  Started Redis; polling up to 60 s for API + workers to recover and flush events ...")
 
     # Phase 1: wait for the API server itself to reconnect.
     _api_up = False
@@ -191,6 +195,47 @@ if not a.quick:
     s = api("/api/cloud/stats")
     check("2c. all jobs complete after restart", s.get("failed_total", 0) == 0,
           f"failed={s.get('failed_total')}")
+
+    # --- Test 2d-2e: two outages >7 s apart -> two pairs (Block-3 SET NX lock) ---
+    print("\n=== Test 2d-2e: two outages 15 s apart -> two pairs ===")
+    api("/api/cloud/reset", {})
+    time.sleep(0.5)
+    api("/api/cloud/storm", {"n": 10, "critical": 0, "policy": "fifo"})
+    time.sleep(1)
+
+    # First outage
+    compose("stop", "redis")
+    print("  Stopped Redis (outage 1); waiting 2 s ...")
+    time.sleep(2)
+    compose("start", "redis")
+    print("  Started Redis; waiting 15 s before second outage (lock TTL=7 s) ...")
+    time.sleep(15)
+
+    # Second outage -- lock has expired, should produce a second pair
+    compose("stop", "redis")
+    print("  Stopped Redis (outage 2); waiting 2 s ...")
+    time.sleep(2)
+    compose("start", "redis")
+    print("  Started Redis; polling for two pairs ...")
+
+    _tl2: list = []
+    for _i in range(30):
+        time.sleep(1)
+        try:
+            _tl2 = api("/api/cloud/timeline").get("events", [])
+            d_count = sum(1 for e in _tl2 if e["type"] == "redis_down")
+            u_count = sum(1 for e in _tl2 if e["type"] == "redis_up")
+            if d_count >= 2 and u_count >= 2:
+                print(f"  t+{_i+1}s: found {d_count} down / {u_count} up events")
+                break
+        except Exception:
+            pass
+
+    d2 = [e for e in _tl2 if e["type"] == "redis_down"]
+    u2 = [e for e in _tl2 if e["type"] == "redis_up"]
+    check("2d. two redis_down events for two outages", len(d2) == 2, f"count={len(d2)}")
+    check("2e. two redis_up events for two outages",   len(u2) == 2, f"count={len(u2)}")
+    wait_drain(10, timeout=60)
 
 # --- Test 3: overhead measurement -------------------------------------------
 print("\n=== Test 3: overhead measurement ===")
@@ -251,6 +296,7 @@ except Exception as exc:
 
 # 3b. Throughput sanity check: 60 jobs, with traces on; check completion time.
 N_AB = 60
+_rate_on = 0.0
 try:
     api("/api/cloud/reset", {})
     time.sleep(0.5)
@@ -258,12 +304,68 @@ try:
     api("/api/cloud/storm", {"n": N_AB, "critical": 0, "policy": "fifo"})
     drained = wait_drain(N_AB, timeout=60)
     elapsed = time.time() - t_start
-    rate = round(N_AB / elapsed, 2) if elapsed > 0 else 0
-    print(f"  Throughput (with traces): {N_AB} jobs in {elapsed:.1f} s = {rate} jobs/s")
-    check("3b. throughput sanity (>= 3 jobs/s with traces)", rate >= 3.0, f"rate={rate}")
+    _rate_on = round(N_AB / elapsed, 2) if elapsed > 0 else 0
+    print(f"  Throughput (traces on):  {N_AB} jobs in {elapsed:.1f} s = {_rate_on} jobs/s")
+    check("3b. throughput sanity (>= 3 jobs/s with traces)", _rate_on >= 3.0, f"rate={_rate_on}")
 except Exception as exc:
     print(f"  Throughput check: ERROR {exc}")
     check("3b. throughput sanity", False, str(exc))
+
+# 3c. Baseline throughput (full mode only): restart workers with RECORD_TRACES=0 TIMELINE=0.
+_rate_off = 0.0
+if not a.quick:
+    print("\n--- Test 3c: baseline throughput (RECORD_TRACES=0 TIMELINE=0) ---")
+    _w_count = len(running_workers()) or 4
+    try:
+        compose("stop", "worker")
+        time.sleep(1)
+        env_off = {**os.environ, "RECORD_TRACES": "0", "TIMELINE": "0"}
+        subprocess.run(
+            ["docker", "compose", "up", "-d", "--scale", f"worker={_w_count}", "worker"],
+            cwd=REPO, env=env_off, capture_output=True, check=False)
+        time.sleep(2)
+
+        api("/api/cloud/reset", {})
+        time.sleep(0.5)
+        t_base = time.time()
+        api("/api/cloud/storm", {"n": N_AB, "critical": 0, "policy": "fifo"})
+        wait_drain(N_AB, timeout=60)
+        elapsed_base = time.time() - t_base
+        _rate_off = round(N_AB / elapsed_base, 2) if elapsed_base > 0 else 0
+        print(f"  Throughput (traces off): {N_AB} jobs in {elapsed_base:.1f} s = {_rate_off} jobs/s")
+        if _rate_on > 0:
+            delta = abs(_rate_off - _rate_on)
+            pct = delta / max(_rate_off, 0.001) * 100
+            print(f"  Delta: {delta:.2f} jobs/s ({pct:.1f}%)")
+        check("3c. baseline throughput >= 3 jobs/s (traces off)", _rate_off >= 3.0,
+              f"rate={_rate_off}")
+    except Exception as exc:
+        print(f"  Baseline throughput: ERROR {exc}")
+        check("3c. baseline throughput", False, str(exc)[:120])
+    finally:
+        # Restore workers with traces on (default compose env).
+        compose("stop", "worker")
+        time.sleep(1)
+        subprocess.run(
+            ["docker", "compose", "up", "-d", "--scale", f"worker={_w_count}", "worker"],
+            cwd=REPO, capture_output=True, check=False)
+        time.sleep(2)
+
+# --- Running overhead summary (across all blocks) ---
+print("\n=== Overhead summary ===")
+try:
+    _overhead_ms: float | None = overhead_ms  # type: ignore[name-defined]
+except NameError:
+    _overhead_ms = None
+if _overhead_ms is not None:
+    print(f"  Block 1+2: Tracer.start/finish_attempt + timeline.emit  = {_overhead_ms:.3f} ms/job"
+          " (microbenchmark, 2000 iters)")
+    print(f"  Block 3:   SET NX lock replaces 30-s bucket; O(1) Redis SETNX per outage event,")
+    print(f"             not per job -- zero additional per-job overhead in the steady state.")
+    if _rate_on > 0 and _rate_off > 0:
+        print(f"  Throughput: {_rate_off} jobs/s (baseline) vs {_rate_on} jobs/s (traces on)")
+else:
+    print("  (microbenchmark did not run -- no overhead data)")
 
 elapsed_total = time.time() - _t0
 print(f"\nTotal wall time: {elapsed_total:.0f} s")
