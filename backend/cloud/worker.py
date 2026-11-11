@@ -136,14 +136,29 @@ def main() -> None:
     # Job execution below is still strictly one job at a time.
     beating = threading.Event()
 
+    _hb_down_since: float | None = None  # heartbeat tracks outage for timeline
+
     def _beat() -> None:
+        nonlocal _hb_down_since
         backoff = Backoff(f"heartbeat {worker_id}")
         while not beating.is_set():
             wait = HEARTBEAT_EVERY_S
             try:
                 q.heartbeat(worker_id)
                 backoff.ok()
-            except RETRYABLE as exc:      # Redis down: retry sooner than 2 s, with backoff
+                if _hb_down_since is not None:
+                    try:
+                        timeline.emit_redis_up(q.r, _hb_down_since)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    _hb_down_since = None
+            except RETRYABLE as exc:
+                if _hb_down_since is None:
+                    _hb_down_since = time.time()
+                    try:
+                        timeline.emit_redis_down(q.r, _hb_down_since)
+                    except Exception:  # noqa: BLE001
+                        pass
                 wait = backoff.failed(exc)
             except Exception as exc:      # noqa: BLE001 - this thread must never die
                 print(f"[heartbeat {worker_id}] unexpected {exc!r}", flush=True)
@@ -153,7 +168,6 @@ def main() -> None:
     beat_thread.start()
 
     backoff = Backoff(f"worker {worker_id}")
-    _redis_down_since: float | None = None
 
     while not _stop:
         try:
@@ -180,22 +194,9 @@ def main() -> None:
                 last_reap = t
             stored = q.pop(worker_id)
         except RETRYABLE as exc:          # Redis down/restarting: wait, then resume where we were
-            if _redis_down_since is None:
-                _redis_down_since = time.time()
-                try:
-                    timeline.emit_redis_down(q.r, _redis_down_since)
-                except Exception:  # noqa: BLE001
-                    pass
             time.sleep(backoff.failed(exc))
             continue
 
-        # Recovery: Redis is back.
-        if _redis_down_since is not None:
-            try:
-                timeline.emit_redis_up(q.r, _redis_down_since)
-            except Exception:  # noqa: BLE001
-                pass
-            _redis_down_since = None
         backoff.ok()
         # If the connection died AFTER the pop script ran but before we saw the reply, that job is
         # leased to us but unknown to us; its lease simply expires and the reaper requeues it.
