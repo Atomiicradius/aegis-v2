@@ -34,6 +34,7 @@ from redis.exceptions import RedisError
 
 from backend.app.profiles import load_all_tracked_objects
 from backend.cloud import timeline as _timeline
+from backend.cloud.domain import get_domain
 from backend.cloud.events import make_critical_job, pool_summary, random_job
 from backend.cloud.queue import Queue
 from backend.cloud.resilience import retry
@@ -158,7 +159,13 @@ def cloud_trace(event_id: str):
     t = tracer.get(event_id)
     if t is None:
         return JSONResponse({"error": "not_found", "detail": "trace expired or unknown event id"}, status_code=404)
-    return {"event_id": event_id, **t}
+    # D1: attach domain block (best-effort; None when result:<id> not yet written or expired)
+    domain = None
+    try:
+        domain = get_domain(q.r, q.ns, event_id)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"event_id": event_id, **t, **({"domain": domain} if domain is not None else {})}
 
 
 @app.get("/api/cloud/stats")

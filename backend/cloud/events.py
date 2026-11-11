@@ -59,6 +59,7 @@ def _build(a: str, b: str, miss_km: float, hours_to_tca: float, objects) -> Job:
         mission_priority=mission,
         risk=r,
         is_critical=is_critical(r),
+        lead_h=round(hours_to_tca, 4),  # D1: store for domain block; matches risk.py's hours_to_tca
     )
 
 

@@ -44,6 +44,8 @@ class Job(BaseModel):
     enqueued_at: str = ""
     risk: float = 0.0
     is_critical: bool = False
+    # D1: hours from enqueue to TCA (risk.py's hours_to_tca); set by events.py at creation
+    lead_h: float | None = None
 
     @model_validator(mode="after")
     def _fill_defaults(self) -> "Job":

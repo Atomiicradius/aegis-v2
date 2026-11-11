@@ -8,6 +8,7 @@ jobs in one process would blend each other's counts.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
@@ -60,6 +61,21 @@ def run_one(q: Queue, worker_id: str, stored: dict, tracer: trace_mod.Tracer) ->
         record = None
     t_process_end = time.perf_counter()
 
+    # D1: compact outcome — extract residual_km before building result
+    residual_km = None
+    if record is not None:
+        try:
+            residual_km = record["resolution"].get("residual_risk")
+        except Exception:  # noqa: BLE001
+            pass
+    # maneuvering_norad: operator_A/OPERATOR_A -> primary, operator_B/OPERATOR_B -> secondary
+    _ma = outcome.get("maneuvering_agent", "").upper()
+    maneuvering_norad = (
+        job.primary_id if _ma == "OPERATOR_A"
+        else job.secondary_id if _ma == "OPERATOR_B"
+        else None
+    )
+
     result = {
         **outcome,
         "event_id": job.event_id,
@@ -70,6 +86,15 @@ def run_one(q: Queue, worker_id: str, stored: dict, tracer: trace_mod.Tracer) ->
         "retries": retry(lambda: q.retries(job.event_id), f"worker {worker_id}"),
         "risk": job.risk,
         "is_critical": job.is_critical,
+        # D1: domain / compact-outcome fields (embedded in result:<id>, no new Redis key)
+        "primary_id": job.primary_id,
+        "secondary_id": job.secondary_id,
+        "miss_km": job.miss_distance_km,
+        "tca_utc": job.tca_utc,
+        "lead_h": job.lead_h,  # hours_to_tca at enqueue time, matches risk.py urgency definition
+        "maneuvering_norad": maneuvering_norad,
+        "residual_km": residual_km,
+        "validation_clear": outcome.get("resolution_status") == "approved",
     }
     # The job is already computed. If Redis is down NOW we keep `result` in memory and retry until
     # complete() lands (never drop it, never exit). If its lease expired meanwhile, the reaper may
@@ -97,6 +122,8 @@ def run_one(q: Queue, worker_id: str, stored: dict, tracer: trace_mod.Tracer) ->
 def _record(q: Queue, worker_id: str, job: Job, result: dict, record: dict) -> None:
     """Best effort: the transcript is a nicety, the result is already safe. Never block the worker for long."""
     finished, enq = datetime.fromisoformat(result["finished_at"]), datetime.fromisoformat(job.enqueued_at)
+    # D1: tca_h = hours_to_tca stored at job creation (matches risk.py urgency definition)
+    tca_h = job.lead_h
     summary = {
         "event_id": job.event_id, "primary_id": job.primary_id, "secondary_id": job.secondary_id,
         "primary_name": record["primary_name"], "secondary_name": record["secondary_name"],
@@ -106,6 +133,7 @@ def _record(q: Queue, worker_id: str, job: Job, result: dict, record: dict) -> N
         "latency_ms": round((finished - enq).total_seconds() * 1000), "finished_at": result["finished_at"],
         "retries": result.get("retries", 0),   # Block 1: needed for recent_retried and attempts field
         "attempts": result.get("retries", 0) + 1,
+        "tca_h": tca_h,  # D1: hours to TCA at enqueue time
     }
     try:
         retry(lambda: q.record(summary, record["transcript"], record["resolution"]),
@@ -177,15 +205,41 @@ def main() -> None:
                 if requeued or failed:
                     print(f"[worker {worker_id}] reaped: requeued={requeued} failed={failed}", flush=True)
                 # Emit timeline events and mark expired attempts (best-effort).
-                for job_info in reaped:
+                # D1: batch-fetch pair info for detail enrichment (one pipeline, non-blocking)
+                _pair_data: list[dict] = [{} for _ in reaped]
+                if reaped:
+                    try:
+                        _pipe = q.r.pipeline()
+                        for _ji in reaped:
+                            _pipe.get(q.k(f"job:{_ji['id']}"))
+                        _job_raws = _pipe.execute()
+                        from backend.app.profiles import load_all_tracked_objects as _lato  # noqa: PLC0415
+                        _obj_map = {_o.norad_id: _o for _o in _lato()}
+                        for _idx, _raw in enumerate(_job_raws):
+                            if not _raw:
+                                continue
+                            _jd = json.loads(_raw)
+                            _pid, _sid = _jd.get("primary_id", ""), _jd.get("secondary_id", "")
+                            _pname = _obj_map[_pid].name if _pid in _obj_map else f"NORAD {_pid}"
+                            _sname = _obj_map[_sid].name if _sid in _obj_map else f"NORAD {_sid}"
+                            _pair_data[_idx] = {
+                                "pair": f"{_pname} / {_sname}",
+                                "risk": round(_jd.get("risk", 0), 3),
+                                "is_critical": bool(_jd.get("is_critical", False)),
+                            }
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                for job_info, _pd in zip(reaped, _pair_data):
                     jid, outcome, prev_worker, attempt_n = (
                         job_info["id"], job_info["outcome"],
                         job_info["worker_id"], job_info["attempt_n"])
                     try:
                         if outcome == "requeued":
                             timeline.emit(q.r, "lease_expired", worker_id,
-                                          detail={"prev_worker": prev_worker}, event_id=jid)
-                            timeline.emit(q.r, "job_requeued", worker_id, event_id=jid)
+                                          detail={"prev_worker": prev_worker, **_pd}, event_id=jid)
+                            timeline.emit(q.r, "job_requeued", worker_id, event_id=jid,
+                                          detail=_pd)
                         else:
                             timeline.emit(q.r, "job_failed", worker_id, event_id=jid)
                     except Exception:  # noqa: BLE001
