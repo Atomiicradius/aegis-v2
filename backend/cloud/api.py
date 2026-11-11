@@ -33,9 +33,11 @@ from pydantic import BaseModel, Field
 from redis.exceptions import RedisError
 
 from backend.app.profiles import load_all_tracked_objects
+from backend.cloud import timeline as _timeline
 from backend.cloud.events import make_critical_job, pool_summary, random_job
 from backend.cloud.queue import Queue
 from backend.cloud.resilience import retry
+from backend.cloud.trace import Tracer
 
 WINDOW = 500          # results used for latency stats
 ALIVE_BELOW_S = 10.0  # heartbeat age that counts as alive
@@ -51,6 +53,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 q = Queue()
+tracer = Tracer(q.r, q.ns)
 POOL = pool_summary(load_all_tracked_objects())   # loaded once at start-up (read-only, no network)
 
 
@@ -80,8 +83,8 @@ def dashboard() -> FileResponse:
 
 @app.get("/api/cloud/recent")
 def recent(limit: int = Query(10, ge=1, le=30)) -> list[dict]:
-    """Last `limit` finished jobs, newest first (+ up to 3 older critical ones). Rows are summaries only."""
-    return q.recent_summaries(limit)
+    """Last `limit` finished jobs with attempts count + up to 5 retried jobs pinned."""
+    return q.recent_summaries_ext(limit)
 
 
 _EVENT_ID = re.compile(r"^[0-9a-f-]{36}$")
@@ -94,6 +97,25 @@ def resolution(event_id: str):
     if record is None:
         return JSONResponse({"error": "not_found", "detail": "transcript expired or unknown event id"}, status_code=404)
     return {"event_id": event_id, **record}
+
+
+@app.get("/api/cloud/timeline")
+def cloud_timeline(since_seq: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=1000)) -> dict:
+    """Return timeline events in ascending seq order. Use since_seq for incremental polling."""
+    events = _timeline.get_events(q.r, since_seq=since_seq, limit=limit)
+    last_seq = events[-1]["seq"] if events else since_seq
+    return {"events": events, "last_seq": last_seq}
+
+
+@app.get("/api/cloud/trace/{event_id}")
+def cloud_trace(event_id: str):
+    """Return the full trace for a job. 404 JSON when expired or unknown."""
+    if not _EVENT_ID.match(event_id):
+        return JSONResponse({"error": "not_found", "detail": "invalid event id format"}, status_code=404)
+    t = tracer.get(event_id)
+    if t is None:
+        return JSONResponse({"error": "not_found", "detail": "trace expired or unknown event id"}, status_code=404)
+    return {"event_id": event_id, **t}
 
 
 @app.get("/api/cloud/stats")
@@ -176,6 +198,11 @@ def _run_storm(req: StormReq) -> None:
     # re-adding a queued id only overwrites its own score), so a retried chunk cannot duplicate work.
     wait = lambda fn: retry(fn, "storm", max_wait_s=120)  # noqa: E731
     wait(lambda: q.r.set(q.k("meta:policy"), req.policy))
+    try:
+        _timeline.emit(q.r, "storm_started", "api",
+                       detail={"n": req.n, "policy": req.policy, "critical": req.critical})
+    except Exception:  # noqa: BLE001
+        pass
     chunks = 20
     size = math.ceil(req.n / chunks)
     for i in range(chunks):
@@ -204,4 +231,8 @@ def critical(req: CriticalReq) -> dict:
 @app.post("/api/cloud/reset")
 def reset() -> dict:
     q.r.flushdb()
+    try:
+        _timeline.emit(q.r, "reset", "api", detail={})
+    except Exception:  # noqa: BLE001
+        pass
     return {"status": "flushed"}

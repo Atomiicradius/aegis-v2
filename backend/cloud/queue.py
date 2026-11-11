@@ -2,16 +2,20 @@
 queue.py — Redis priority queue with leases (at-least-once, idempotent results).
 
 Redis keys (all prefixed with `ns`, default ""):
-  job:<id>         JSON of the job (incl. its queue score)
-  jobs             ZSET  id -> score        lowest score is popped first
-  processing       HASH  id -> lease expiry (unix seconds)
-  owner            HASH  id -> worker_id    (debugging only)
-  result:<id>      JSON result; written once (SET NX) -> completion is idempotent
-  retries:<id>     INT   how many times a lease on this job expired
-  counters         HASH  completed / failed / retries_total
-  recent           LIST  last 1000 completed ids, newest first (stats API)
-  worker_done      HASH  worker_id -> jobs completed
-  workers          HASH  worker_id -> last heartbeat (unix seconds)
+  job:<id>              JSON of the job (incl. its queue score)
+  jobs                  ZSET  id -> score        lowest score is popped first
+  processing            HASH  id -> lease expiry (unix seconds)
+  owner                 HASH  id -> worker_id    (debugging only)
+  result:<id>           JSON result; written once (SET NX) -> completion is idempotent
+  retries:<id>          INT   how many times a lease on this job expired
+  counters              HASH  completed / failed / retries_total
+  recent                LIST  last 1000 completed ids, newest first (stats API)
+  worker_done           HASH  worker_id -> jobs completed
+  workers               HASH  worker_id -> last heartbeat (unix seconds)
+  transcript:<id>       JSON full record, TTL 2 h
+  recent_transcripts    LIST last TRANSCRIPT_WINDOW summaries, newest first
+  recent_critical       LIST last 10 critical summaries, newest first
+  recent_retried        LIST last 10 summaries of jobs with >1 attempt, newest first (Block 1)
 
 Why Lua: a Redis script runs atomically, so "take a job AND take its lease" can
 never be interleaved with another client (no lost job, no double pop), and two
@@ -103,6 +107,55 @@ return {requeued, failed}
 """
 
 
+# reap_detail: same as reap, but also returns per-job details (id, outcome, owner, attempt_n).
+# Used by the worker to emit timeline events and update traces without a second Lua round trip.
+# Return format: {requeued_count, failed_count, id1, outcome1, owner1, attempt_n1, ...}
+_REAP_DETAIL_LUA = """
+-- KEYS: processing, owner, jobs, counters     ARGV: max_retries, ns
+local t = redis.call('TIME')
+local now = t[1] + t[2] / 1000000
+local requeued, failed = 0, 0
+local details = {}
+local leases = redis.call('HGETALL', KEYS[1])
+for i = 1, #leases, 2 do
+  local id, deadline = leases[i], tonumber(leases[i + 1])
+  if deadline < now then
+    local owner = redis.call('HGET', KEYS[2], id) or ''
+    redis.call('HDEL', KEYS[1], id)
+    redis.call('HDEL', KEYS[2], id)
+    local raw = redis.call('GET', ARGV[2] .. 'job:' .. id)
+    if raw and redis.call('EXISTS', ARGV[2] .. 'result:' .. id) == 0 then
+      local job = cjson.decode(raw)
+      local n = redis.call('INCR', ARGV[2] .. 'retries:' .. id)
+      redis.call('HINCRBY', KEYS[4], 'retries_total', 1)
+      if n <= tonumber(ARGV[1]) then
+        redis.call('ZADD', KEYS[3], job.score, id)
+        requeued = requeued + 1
+        table.insert(details, id)
+        table.insert(details, 'requeued')
+        table.insert(details, owner)
+        table.insert(details, tostring(n))
+      else
+        redis.call('SET', ARGV[2] .. 'result:' .. id, cjson.encode({
+          event_id = id, worker_id = '', enqueued_at = job.enqueued_at,
+          started_at = '', finished_at = tostring(now), retries = n,
+          risk = job.risk, is_critical = job.is_critical, llm_mode = '',
+          resolution_status = 'failed', fallbacks_used = 0 }))
+        redis.call('HINCRBY', KEYS[4], 'failed', 1)
+        failed = failed + 1
+        table.insert(details, id)
+        table.insert(details, 'failed')
+        table.insert(details, owner)
+        table.insert(details, tostring(n))
+      end
+    end
+  end
+end
+local result = {requeued, failed}
+for _, v in ipairs(details) do table.insert(result, v) end
+return result
+"""
+
 # record: keep the full negotiation record of a finished job, bounded in size.
 #   transcript:<id>     JSON {summary, transcript, resolution}, expires after TTL (2 h)
 #   recent_transcripts  LIST of summary JSON, newest first, at most WINDOW entries
@@ -111,8 +164,8 @@ return {requeued, failed}
 # transcript key (unless it was critical: criticals keep theirs until the TTL), so memory stays
 # bounded however big the storm is.
 _RECORD_LUA = """
--- KEYS: transcript, recent_transcripts, recent_critical
--- ARGV: record_json, summary_json, is_critical('1'/'0'), ttl_seconds, window, ns, critical_cap
+-- KEYS: transcript, recent_transcripts, recent_critical, recent_retried
+-- ARGV: record_json, summary_json, is_critical('1'/'0'), ttl_seconds, window, ns, critical_cap, retries_count
 redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[4]))
 redis.call('LPUSH', KEYS[2], ARGV[2])
 local window = tonumber(ARGV[5])
@@ -125,12 +178,17 @@ if ARGV[3] == '1' then
   redis.call('LPUSH', KEYS[3], ARGV[2])
   redis.call('LTRIM', KEYS[3], 0, tonumber(ARGV[7]) - 1)
 end
+if tonumber(ARGV[8]) > 0 then
+  redis.call('LPUSH', KEYS[4], ARGV[2])
+  redis.call('LTRIM', KEYS[4], 0, 9)
+end
 return 1
 """
 
 TRANSCRIPT_TTL_S = 2 * 3600
 TRANSCRIPT_WINDOW = 30
 CRITICAL_KEEP = 10
+RETRIED_KEEP = 10
 
 
 class Queue:
@@ -149,6 +207,7 @@ class Queue:
         self._pop = self.r.register_script(_POP_LUA)
         self._complete = self.r.register_script(_COMPLETE_LUA)
         self._reap = self.r.register_script(_REAP_LUA)
+        self._reap_detail_script = self.r.register_script(_REAP_DETAIL_LUA)
         self._record = self.r.register_script(_RECORD_LUA)
 
     def k(self, name: str) -> str:
@@ -213,11 +272,13 @@ class Queue:
     def record(self, summary: dict, transcript: list, resolution: dict) -> None:
         """Store the full record of a job whose complete() this worker just won (see _RECORD_LUA)."""
         jid = summary["event_id"]
+        retries = int(summary.get("retries", 0))
         self._record(
-            keys=[self.k("transcript:" + jid), self.k("recent_transcripts"), self.k("recent_critical")],
+            keys=[self.k("transcript:" + jid), self.k("recent_transcripts"),
+                  self.k("recent_critical"), self.k("recent_retried")],
             args=[json.dumps({"summary": summary, "transcript": transcript, "resolution": resolution}),
                   json.dumps(summary), "1" if summary.get("is_critical") else "0",
-                  TRANSCRIPT_TTL_S, TRANSCRIPT_WINDOW, self.ns, CRITICAL_KEEP])
+                  TRANSCRIPT_TTL_S, TRANSCRIPT_WINDOW, self.ns, CRITICAL_KEEP, str(retries)])
 
     def recent_summaries(self, limit: int) -> list[dict]:
         """Newest-first summary rows for the UI: the last `limit` completed jobs, plus up to 3 of the
@@ -232,16 +293,57 @@ class Queue:
         pinned = [c for c in (json.loads(x) for x in crit) if c["event_id"] not in shown]
         return (rows[:max(0, limit - len(pinned))] + pinned)[:limit]
 
+    def recent_summaries_ext(self, limit: int) -> list[dict]:
+        """Like recent_summaries but also appends up to 5 retried jobs not already shown,
+        and annotates each row with `attempts` count (from the summary's `retries` field)."""
+        pipe = self.r.pipeline(transaction=False)
+        pipe.lrange(self.k("recent_transcripts"), 0, limit - 1)
+        pipe.lrange(self.k("recent_critical"), 0, 2)
+        pipe.lrange(self.k("recent_retried"), 0, 4)
+        newest, crit, retried = pipe.execute()
+        rows = [json.loads(x) for x in newest]
+        # Annotate each row with attempts = retries + 1
+        for r in rows:
+            r.setdefault("attempts", int(r.get("retries", 0)) + 1)
+        shown = {r["event_id"] for r in rows}
+        pinned_crit = [c for c in (json.loads(x) for x in crit) if c["event_id"] not in shown]
+        for c in pinned_crit:
+            c.setdefault("attempts", int(c.get("retries", 0)) + 1)
+        shown |= {c["event_id"] for c in pinned_crit}
+        retried_rows = [json.loads(x) for x in retried if json.loads(x)["event_id"] not in shown]
+        for r in retried_rows:
+            r.setdefault("attempts", int(r.get("retries", 0)) + 1)
+        combined = rows + pinned_crit + retried_rows
+        return combined[:limit + 5]  # allow up to 5 extra retried rows beyond limit
+
     def get_record(self, job_id: str) -> dict | None:
         raw = self.r.get(self.k("transcript:" + job_id))
         return json.loads(raw) if raw else None
 
     def reap(self) -> tuple[int, int]:
-        """Requeue (or fail) expired leases. Returns (requeued, failed)."""
+        """Requeue (or fail) expired leases. Returns (requeued, failed). Signature unchanged."""
         requeued, failed = self._reap(
             keys=[self.k(n) for n in ("processing", "owner", "jobs", "counters")],
             args=[self.max_retries, self.ns])
         return int(requeued), int(failed)
+
+    def reap_detail(self) -> tuple[int, int, list[dict]]:
+        """Like reap() but also returns per-job details for timeline/trace updates.
+        Third return: list of {id, outcome('requeued'|'failed'), worker_id, attempt_n}."""
+        raw = self._reap_detail_script(
+            keys=[self.k(n) for n in ("processing", "owner", "jobs", "counters")],
+            args=[self.max_retries, self.ns])
+        items = list(raw)
+        requeued, failed = int(items[0]), int(items[1])
+        reaped: list[dict] = []
+        for i in range(2, len(items), 4):
+            reaped.append({
+                "id": items[i],
+                "outcome": items[i + 1],
+                "worker_id": items[i + 2] or "",
+                "attempt_n": int(items[i + 3]),
+            })
+        return requeued, failed, reaped
 
     def heartbeat(self, worker_id: str) -> None:
         self.r.hset(self.k("workers"), worker_id, self.now())

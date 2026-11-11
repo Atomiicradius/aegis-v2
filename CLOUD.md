@@ -20,6 +20,11 @@ workers pull jobs from Redis and call it. Commands are PowerShell, run from the 
 | `transcript:<id>` | string | `{summary, transcript, resolution}` of a finished job, **TTL 2 h**; kept for every critical job and for the last 30 finished jobs (deleted when a normal job leaves that window) |
 | `recent_transcripts` | list | summary JSON of the last 30 finished jobs, newest first (trimmed in the same atomic script that stores the transcript) |
 | `recent_critical` | list | summary JSON of the last 10 critical jobs, newest first |
+| `recent_retried` | list | summary JSON of the last 10 jobs that required >1 attempt, newest first (**Block 1**) |
+| `trace:<id>` | string | per-job timing trace JSON, **TTL 1 h** (**Block 1**); `{enqueued_at, risk, is_critical, attempts[], completed_at, final_status}` — see trace structure below |
+| `timeline` | list | system-level event log, capped to 2000, newest first (**Block 1**); each entry: `{seq, ts, type, source, detail, event_id?}` |
+| `timeline:seq` | string int | monotonically increasing counter for timeline ordering (**Block 1**) |
+| `timeline:outage:<ts_s>` | string | NX sentinel (120 s TTL) to deduplicate `redis_down` events per second across workers (**Block 1**) |
 
 `<id>` = `event_id` = uuid5(sorted pair + `tca_utc`), so the same encounter always has the same id.
 
@@ -29,7 +34,7 @@ workers pull jobs from Redis and call it. Commands are PowerShell, run from the 
 
 ## Result JSON
 `event_id, worker_id, enqueued_at, started_at, finished_at, retries, risk, is_critical, llm_mode, resolution_status, fallbacks_used`
-plus from `process_job`: `maneuvering_agent, delta_v_mps, rounds, duration_ms`.
+plus from `process_job`: `maneuvering_agent, delta_v_mps, rounds, duration_ms, negotiate_ms` (**Block 1**: `negotiate_ms` added for trace waterfall, existing keys unchanged).
 `resolution_status` = `approved | approved_no_action | no_safe_maneuver_found | error` (worker caught an exception; has `error`) `| failed` (written by the reaper after retries ran out; `started_at` empty, `finished_at` is an epoch string).
 
 ## Scoring (`backend/cloud/scoring.py`)
@@ -50,6 +55,32 @@ Live worker = heartbeat < 10 s old; dead = registered but silent >= 10 s.
 
 ## API + dashboard (`backend/cloud/api.py`, compose service `api`, http://localhost:8010)
 `GET /` dashboard; `GET /api/cloud/recent?limit=10`, `GET /api/cloud/resolution/{event_id}` (see Resolution records); `GET /api/cloud/stats` (fixed key contract; **added** `pool_size` (int) and `pool_groups` ({group: count}) - existing keys unchanged); `POST /api/cloud/storm {n,critical,critical_after_s,policy}`, `/critical {k}`, `/reset` (FLUSHDB). Details and demo flow: DEMO.md.
+
+**Block 1 additions (additive only — existing endpoints unchanged):**
+- `GET /api/cloud/timeline?since_seq=<n>&limit=<m>` — returns `{events: [...], last_seq: N}` in ascending order. Default limit 200. 503 when Redis unavailable. Use `since_seq` to poll incrementally (pass `last_seq` back as `since_seq`).
+- `GET /api/cloud/trace/{event_id}` — returns `{event_id, enqueued_at, risk, is_critical, attempts[], completed_at, final_status}`. 404 JSON `{"error":"not_found"}` when expired or unknown.
+- `GET /api/cloud/recent` — extended: each row now includes `attempts` (int, = retries+1) and up to 5 retried-job rows appended.
+
+**Block 1 timeline event types** (emitted best-effort; never block a job):
+| type | source | when |
+|---|---|---|
+| `worker_started` | worker_id | on worker startup |
+| `worker_stopped` | worker_id | on graceful shutdown |
+| `lease_expired` | worker_id | reaper finds expired lease (per job); detail: `{prev_worker}` |
+| `job_requeued` | worker_id | reaper requeues job (per job) |
+| `job_failed` | worker_id | reaper exhausts retries and writes failed result |
+| `redis_down` | worker | first retryable Redis error detected (deduplicated per second) |
+| `redis_up` | worker | Redis recovered |
+| `storm_started` | api | POST /api/cloud/storm; detail: `{n, policy, critical}` |
+| `reset` | api | POST /api/cloud/reset |
+
+**Block 1 trace attempt outcomes:** `pending`, `completed`, `lease_expired`, `error`, `duplicate_discarded`, `dead_lettered` (reserved for Block 4).
+
+**Block 1 kill switches:**
+| var | default | effect |
+|---|---|---|
+| `TIMELINE` | `1` | `0` = no timeline writes |
+| `RECORD_TRACES` | `1` | `0` = no trace writes |
 
 ## Satellite pool (EVENT_POOL=pool)
 **Real satellites, real orbits, synthetic close approaches.** The storm picks random pairs from ~400 real LEO satellites
@@ -115,6 +146,8 @@ Reading it: one retry per killed worker (its in-flight job; the lease is 10 s, t
 | `VALIDATION_SET` | `bounded` | which objects the safety validation screens against: `full` \| `curated` \| `bounded` |
 | `RECORD_TRANSCRIPTS` | `1` | `0` = the worker does not store transcripts / recent rows (kill switch) |
 | `VALIDATION_K` | `50` | `bounded`: nearest-orbit objects added to curated + the pair |
+| `TIMELINE` | `1` | **Block 1** `0` = disable all timeline writes |
+| `RECORD_TRACES` | `1` | **Block 1** `0` = disable all trace writes |
 
 ## Scripts (`docker compose run --rm worker python scripts/<x>.py ...` unless HOST)
 | script | does |
@@ -138,6 +171,7 @@ Reading it: one retry per killed worker (its in-flight job; the lease is 10 s, t
 | `crash_test.md` | manual `docker kill` test |
 | `check_stats.py [--storm N]` (HOST) | poll `/api/cloud/stats` each second and print it |
 | `autoscaler.py` (HOST) | scale `worker` 2..8 by queue depth (up fast, down 1 step per cooldown) |
+| `check_trace.py [--skip-kill] [--skip-ab]` (HOST) | **Block 1** verify trace/timeline after a worker kill + A/B overhead measurement |
 
 ```powershell
 docker compose build worker                          # REQUIRED after editing backend/ or scripts/ (baked into the image)

@@ -142,7 +142,10 @@ def process_job(job: Job | dict, *, force_rejection: bool = False) -> dict:
 
     engine = NegotiationEngine(alert, profile_a, profile_b, sat_a, sat_b,
                                validation_objects(all_objects, sat_a, sat_b))
+    # Minimal Block-1 addition: time the negotiation engine call for the trace waterfall.
+    t_neg = time.perf_counter()
     transcript, resolution = engine.run_negotiation(force_initial_rejection=force_rejection)
+    negotiate_ms = round((time.perf_counter() - t_neg) * 1000.0, 2)
 
     return {
         "event_id": job.event_id,
@@ -151,6 +154,7 @@ def process_job(job: Job | dict, *, force_rejection: bool = False) -> dict:
         "delta_v_mps": resolution.delta_v_mps,
         "rounds": max((m.round for m in transcript), default=0),
         "duration_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+        "negotiate_ms": negotiate_ms,
         "llm_mode": mode,
         "fallbacks_used": LLM_COUNTERS[mode]["fallbacks"] - fallbacks_before,
         # The full record, in exactly the shape the Negotiate page renders (NegotiationMessage[] /
