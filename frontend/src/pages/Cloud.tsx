@@ -11,6 +11,7 @@ import { StatusChip } from '../components/cloud/StatusChip';
 import { TONE_TEXT, type Tone } from '../components/cloud/tone';
 import { ChaosDock } from '../components/cloud/ChaosDock';
 import { IncidentTimeline } from '../components/cloud/IncidentTimeline';
+import { RacePanel } from '../components/cloud/RacePanel';
 import { postCritical, postReset, postStorm, type Result, type StormPolicy } from '../lib/cloudApi';
 import { useAnimeEntry } from '../lib/useAnimeEntry';
 import { useAnimeStagger } from '../lib/useAnimeStagger';
@@ -289,6 +290,11 @@ export default function Cloud() {
             <IncidentTimeline events={timelineEvents} throughputHistory={history.map((h) => h.throughput)} />
             <ChaosDock events={timelineEvents} mock={mock} />
           </section>
+
+          {/* ── Block 5: FIFO vs priority race ── */}
+          <div className="mt-5" style={HIDDEN}>
+            <RacePanel mock={mock} />
+          </div>
 
         </div>
 

@@ -226,7 +226,7 @@ export function IncidentTimeline({ events, throughputHistory }: Props) {
             {jobsLostVal}
           </dd>
           <dd className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.1em] text-text-muted">
-            0 conj. unresolved
+            {leaked === null ? '--' : leaked === 0 ? '0 conj. unresolved' : `${leaked} conj. unresolved`}
           </dd>
         </div>
         <Readout label="Fault to retry" value={fmtTimer(faultToFirstRetry)} mono />

@@ -5,7 +5,7 @@
  */
 import type { CloudStats, CloudWorker } from './cloudApi';
 
-export const MOCK_SCENARIOS = ['idle', 'storm', 'scaled', 'critical', 'dead', 'down', 'chaos'] as const;
+export const MOCK_SCENARIOS = ['idle', 'storm', 'scaled', 'critical', 'dead', 'down', 'chaos', 'race'] as const;
 export type MockScenario = (typeof MOCK_SCENARIOS)[number];
 
 export function parseMockScenario(value: string | null): MockScenario | null {

@@ -25,6 +25,8 @@ workers pull jobs from Redis and call it. Commands are PowerShell, run from the 
 | `timeline` | list | system-level event log, capped to 2000, newest first (**Block 1**); each entry: `{seq, ts, type, source, detail, event_id?}` |
 | `timeline:seq` | string int | monotonically increasing counter for timeline ordering (**Block 1**) |
 | `timeline:outage:<ts_s>` | string | NX sentinel (120 s TTL) to deduplicate `redis_down` events per second across workers (**Block 1**) |
+| `race:result:latest` | string | JSON of the most recent completed race (fifo + priority lanes); written by `POST /api/cloud/race/start` (**Block 5**) |
+| `race:status` | string | `running` \| `done` \| `error`; set for the duration of a race run (**Block 5**) |
 
 `<id>` = `event_id` = uuid5(sorted pair + `tca_utc`), so the same encounter always has the same id.
 
@@ -218,6 +220,20 @@ All observability work is strictly additive; existing endpoints, Redis keys, and
 - **`?mock=chaos`** (`frontend/src/lib/cloudMock.ts`): phase1 (t≥5 2 workers dead), phase2 (t≥25 redis outage), recovery (t≥35). `cloudMockTimeline.ts` returns scripted events matching the phases.
 - **`scripts/check_chaos.py`**: two-tier gate: `--quick` (checks 1–4: enqueued_total, integrity, inject whitelist, timeline read-back; <1 min) and `--full` (adds enqueued counter increment, autoscaler timeline events, regression.py).
 - **Redis keys added**: `counters.enqueued` (new field in existing `counters` hash).
+
+### Block 5 — `obs-5-ok`
+- **FIFO vs priority race** (`backend/cloud/api.py`): two-lane in-process race; both lanes process the **same** job set in different order. No extra Docker services; no main-queue interference.
+- **Race endpoints** (additive only):
+  - `POST /api/cloud/race/start {n, critical, critical_after_s}` → starts background race, returns immediately.
+  - `GET  /api/cloud/race/result` → 202 `{status:"running"}` while in-flight, full result when done, 404 if never run.
+  - `POST /api/cloud/race/reset` → clears `race:result:latest` and `race:status` only (never touches main queue).
+- **Namespace**: results stored at `race:result:latest` / `race:status` — no existing Redis key touched; namespace default (`Queue(ns="")`) is unchanged.
+- **Lane data**: each `RaceLane` includes `critical_pairs` with `primary_name`, `secondary_name`, `lead_h` (from `job.lead_h`), `cumulative_ms_before` (real ms before this pair's processing started), and `lane` field.
+- **Timeline events**: `race_started` and `race_done` emitted best-effort; `race_done` detail includes `lane="both"` and both critical avg latencies.
+- **SimClock** (`frontend/src/components/cloud/SimClock.tsx`): x1 / x60 (default) / x300 / x600 scale selector. Scales `cumulative_ms_before + latency_ms` for display only. Computes `LEAD TIME CONSUMED %` and `TCA MISSED` from `simMs / (lead_h * 3_600_000)`. Never writes to backend, never feeds stats or storage.
+- **RacePanel** (`frontend/src/components/cloud/RacePanel.tsx`): two-lane side-by-side view. Each lane: policy label, critical_latency stats, named pair list with TCA+h, per-pair lead gauge, priority-advantage badge.
+- **Mock mode**: `?mock=race` activates `mockRaceResult()` with 5 scripted critical pairs per lane; `?mock=` scenarios expanded to include `race`.
+- **`scripts/check_race.py`**: two-tier gate: `--quick` (R1–R5: start, result, lanes, pair fields, namespace; ~2 min) and full (R6–R8: adds priority-faster assertion, lead_h validity, regression.py).
 
 ## Gotchas
 - Same `--seed` re-run without a reset is a **no-op**: event ids repeat and finished jobs are skipped. Reset first (`--reset`).

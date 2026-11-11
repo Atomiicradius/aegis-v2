@@ -246,3 +246,62 @@ export async function fetchIntegrity(signal?: AbortSignal): Promise<Result<Integ
 export const postStorm = (req: StormRequest) => post('/api/cloud/storm', req);
 export const postCritical = (k: number) => post('/api/cloud/critical', { k });
 export const postReset = () => post('/api/cloud/reset', {});
+
+// ---------------------------------------------------------------------------
+// Block 5 — FIFO vs priority race types + API calls
+// ---------------------------------------------------------------------------
+
+/** One critical conjunction in a race lane result. */
+export type RacePair = {
+  event_id: string;
+  primary_name: string;
+  secondary_name: string;
+  miss_km: number;
+  risk: number;
+  is_critical: true;
+  lead_h: number | null;
+  resolution_status: string;
+  latency_ms: number;
+  /** real ms elapsed before this pair's processing started (for SimClock TCA math) */
+  cumulative_ms_before: number;
+  lane: 'fifo' | 'priority';
+};
+
+/** One lane of a completed race. */
+export type RaceLane = {
+  policy: 'fifo' | 'priority';
+  total_jobs: number;
+  critical_jobs: number;
+  critical_latency_ms: { avg: number; max: number };
+  critical_resolution_ms: { avg: number; max: number };
+  critical_pairs: RacePair[];
+  total_duration_ms: number;
+  started_at: string;
+  finished_at: string;
+};
+
+/** Result of GET /api/cloud/race/result. */
+export type RaceResult = {
+  fifo: RaceLane;
+  priority: RaceLane;
+  n: number;
+  critical: number;
+  enqueued_at: string;
+};
+
+export type RaceStartReq = { n: number; critical: number; critical_after_s: number };
+
+export const postRaceStart = (req: RaceStartReq) => post('/api/cloud/race/start', req);
+export const postRaceReset = () => post('/api/cloud/race/reset', {});
+
+export async function fetchRaceResult(signal?: AbortSignal): Promise<Result<RaceResult | { status: 'running' }>> {
+  const result = await request('/api/cloud/race/result', { signal });
+  if (!result.ok) return result;
+  const d = result.data;
+  if (isRecord(d) && (d as Record<string, unknown>).status === 'running') {
+    return { ok: true, data: { status: 'running' } };
+  }
+  return isRecord(d) && isRecord((d as Record<string, unknown>).fifo)
+    ? { ok: true, data: d as unknown as RaceResult }
+    : { ok: false, error: 'unexpected race result payload' };
+}

@@ -22,6 +22,7 @@ import os
 import random
 import statistics
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -36,6 +37,7 @@ from backend.app.profiles import load_all_tracked_objects
 from backend.cloud import timeline as _timeline
 from backend.cloud.domain import get_domain
 from backend.cloud.events import make_critical_job, pool_summary, random_job
+from backend.cloud.jobs import process_job
 from backend.cloud.queue import Queue
 from backend.cloud.resilience import retry
 from backend.cloud.trace import Tracer
@@ -287,3 +289,185 @@ def reset() -> dict:
     except Exception:  # noqa: BLE001
         pass
     return {"status": "flushed"}
+
+
+# ---------------------------------------------------------------------------
+# Block 5 — FIFO vs priority race
+# ---------------------------------------------------------------------------
+# Namespace: results go in race:result:latest (no existing key is touched).
+# The race runs jobs directly in-process (two threads, same job set, different
+# ordering) so it needs no extra Docker services and never touches the main queue.
+# ---------------------------------------------------------------------------
+
+_RACE_RESULT_KEY = "race:result:latest"
+_RACE_STATUS_KEY = "race:status"
+_race_running = False
+
+
+class RaceReq(BaseModel):
+    n: int = Field(60, ge=10, le=300)
+    critical: int = Field(5, ge=1, le=20)
+    critical_after_s: float = Field(2.0, ge=0.0, le=60.0)
+
+
+def _race_lane(policy: str, jobs: list, critical_after_idx: int) -> dict:
+    """Process a list of jobs in-process, ordered by policy. Returns lane stats.
+    critical_after_idx: index past which the critical jobs were inserted in the FIFO order.
+    For FIFO ordering, jobs arriving before that index are processed first.
+    """
+    if policy == "fifo":
+        # arrival order: normal jobs by enqueued_at, then critical at the end
+        ordered = sorted(jobs, key=lambda j: j.enqueued_at)
+    else:
+        # priority order: highest risk first; ties broken by enqueued_at
+        ordered = sorted(jobs, key=lambda j: (-j.risk, j.enqueued_at))
+
+    t_lane_start = datetime.now(timezone.utc)
+    t_start_perf = time.perf_counter()
+
+    critical_pairs = []
+    all_latencies: list[float] = []
+    critical_latencies: list[float] = []
+    cumulative_ms = 0.0
+
+    for j in ordered:
+        t0 = time.perf_counter()
+        try:
+            outcome = process_job(j)
+        except Exception:  # noqa: BLE001
+            outcome = {"resolution_status": "error", "primary_name": j.primary_id,
+                       "secondary_name": j.secondary_id}
+        lat = round((time.perf_counter() - t0) * 1000, 1)
+        all_latencies.append(lat)
+
+        if j.is_critical:
+            critical_latencies.append(lat)
+            critical_pairs.append({
+                "event_id": j.event_id,
+                "primary_name": outcome.get("primary_name", j.primary_id),
+                "secondary_name": outcome.get("secondary_name", j.secondary_id),
+                "miss_km": round(j.miss_distance_km, 3),
+                "risk": round(j.risk, 3),
+                "is_critical": True,
+                "lead_h": j.lead_h,
+                "resolution_status": outcome.get("resolution_status", ""),
+                "latency_ms": lat,
+                "cumulative_ms_before": round(cumulative_ms, 1),
+                "lane": policy,
+            })
+
+        cumulative_ms += lat
+
+    total_ms = round((time.perf_counter() - t_start_perf) * 1000, 1)
+    # resolution_ms = cumulative wait + processing time — the true scheduling latency
+    critical_resolution = [
+        p["cumulative_ms_before"] + p["latency_ms"] for p in critical_pairs
+    ]
+    return {
+        "policy": policy,
+        "total_jobs": len(jobs),
+        "critical_jobs": len(critical_latencies),
+        "critical_latency_ms": {
+            "avg": round(statistics.mean(critical_latencies)) if critical_latencies else 0,
+            "max": round(max(critical_latencies)) if critical_latencies else 0,
+        },
+        "critical_resolution_ms": {
+            "avg": round(statistics.mean(critical_resolution)) if critical_resolution else 0,
+            "max": round(max(critical_resolution)) if critical_resolution else 0,
+        },
+        "critical_pairs": critical_pairs,
+        "total_duration_ms": total_ms,
+        "started_at": t_lane_start.isoformat(),
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _run_race(req: RaceReq) -> None:
+    global _race_running
+    _race_running = True
+    try:
+        q.r.set(_RACE_STATUS_KEY, "running")
+        rng = random.Random(42)  # fixed seed → reproducible pair of lanes
+        objects = load_all_tracked_objects()
+
+        normal_jobs, seen = [], set()
+        while len(normal_jobs) < req.n:
+            j = random_job(rng, objects)
+            if j.event_id not in seen:
+                seen.add(j.event_id)
+                normal_jobs.append(j)
+
+        critical_jobs = []
+        while len(critical_jobs) < req.critical:
+            j = make_critical_job(rng, objects)
+            if j.event_id not in seen:
+                seen.add(j.event_id)
+                critical_jobs.append(j)
+
+        all_jobs = normal_jobs + critical_jobs
+        critical_after_idx = len(normal_jobs)
+
+        try:
+            _timeline.emit(q.r, "race_started", "api",
+                           detail={"n": req.n, "critical": req.critical})
+        except Exception:  # noqa: BLE001
+            pass
+
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            fifo_fut = ex.submit(_race_lane, "fifo", list(all_jobs), critical_after_idx)
+            prio_fut = ex.submit(_race_lane, "priority", list(all_jobs), critical_after_idx)
+
+        fifo_result = fifo_fut.result()
+        prio_result = prio_fut.result()
+
+        result = {
+            "fifo": fifo_result,
+            "priority": prio_result,
+            "n": req.n,
+            "critical": req.critical,
+            "enqueued_at": datetime.now(timezone.utc).isoformat(),
+        }
+        q.r.set(_RACE_RESULT_KEY, json.dumps(result))
+
+        try:
+            _timeline.emit(q.r, "race_done", "api",
+                           detail={"n": req.n, "critical": req.critical,
+                                   "fifo_crit_avg_ms": fifo_result["critical_latency_ms"]["avg"],
+                                   "prio_crit_avg_ms": prio_result["critical_latency_ms"]["avg"],
+                                   "lane": "both"})
+        except Exception:  # noqa: BLE001
+            pass
+        q.r.set(_RACE_STATUS_KEY, "done")
+    except Exception:  # noqa: BLE001
+        q.r.set(_RACE_STATUS_KEY, "error")
+    finally:
+        _race_running = False
+
+
+@app.post("/api/cloud/race/start")
+def race_start(req: RaceReq, bg: BackgroundTasks) -> dict:
+    """Start a FIFO vs priority race. Results available at GET /api/cloud/race/result."""
+    if _race_running:
+        return {"status": "already_running"}
+    bg.add_task(_run_race, req)
+    return {"status": "started", **req.model_dump()}
+
+
+@app.get("/api/cloud/race/result")
+def race_result() -> dict:
+    """Return the most recent race result, or 404 if none has completed yet."""
+    status = q.r.get(_RACE_STATUS_KEY)
+    if status == "running":
+        return JSONResponse({"status": "running"}, status_code=202)
+    raw = q.r.get(_RACE_RESULT_KEY)
+    if raw is None:
+        return JSONResponse({"error": "not_found", "detail": "no race has completed yet"}, status_code=404)
+    return json.loads(raw)
+
+
+@app.post("/api/cloud/race/reset")
+def race_reset() -> dict:
+    """Clear the stored race result. Does NOT flush the main queue."""
+    q.r.delete(_RACE_RESULT_KEY)
+    q.r.delete(_RACE_STATUS_KEY)
+    return {"status": "cleared"}
