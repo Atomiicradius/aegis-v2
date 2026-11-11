@@ -36,6 +36,9 @@ function Row({ row, index, selected, onToggle }: { row: CloudRecentRow; index: n
         <span className="mt-0.5 block truncate font-mono text-[14px] text-text-muted">NORAD {row.primary_id} / {row.secondary_id}</span>
       </td>
       <td className="border-r border-border px-3 py-3 text-right font-mono text-[14px] tabular-nums text-text-primary">{row.miss_km.toFixed(2)}</td>
+      <td className="border-r border-border px-3 py-3 text-right font-mono text-[14px] tabular-nums text-text-secondary">
+        {row.tca_h != null ? row.tca_h.toFixed(1) : '--'}
+      </td>
       <td className={`border-r border-border px-3 py-3 text-right font-mono text-[14px] tabular-nums ${row.is_critical ? 'font-semibold text-warning-light' : 'text-text-primary'}`}>{row.risk.toFixed(2)}</td>
       <td className="border-r border-border px-3 py-3 text-right font-mono text-[14px] tabular-nums text-text-primary">{pad(row.rounds, 2)}</td>
       <td className="border-r border-border px-3 py-3">
@@ -98,12 +101,13 @@ export function ResolutionRecords({ mock }: { mock: MockScenario | null }) {
         onFocus={() => setPointing(true)}
         onBlur={() => setPointing(false)}
       >
-        <table className="w-full min-w-[1080px] table-fixed border-collapse text-left">
+        <table className="w-full min-w-[1140px] table-fixed border-collapse text-left">
           <thead className="bg-surface-secondary/55 font-mono text-[14px] uppercase tracking-[0.14em] text-text-muted">
             <tr>
               <th className={`${TH} w-[6rem]`}>rec</th>
               <th className={TH}>object pair</th>
               <th className={`${TH} w-[7rem] text-right`}>miss km</th>
+              <th className={`${TH} w-[6rem] text-right`}>tca +h</th>
               <th className={`${TH} w-[6rem] text-right`}>risk</th>
               <th className={`${TH} w-[7rem] text-right`}>rounds</th>
               <th className={`${TH} w-[16.5rem]`}>outcome</th>
@@ -115,7 +119,7 @@ export function ResolutionRecords({ mock }: { mock: MockScenario | null }) {
           <tbody className="divide-y divide-border">
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={9} className="px-5 py-10">
+                <td colSpan={10} className="px-5 py-10">
                   <div className="border-l-2 border-warning pl-4">
                     <p className="font-mono text-[14px] uppercase tracking-[0.14em] text-warning-light">{ok ? 'No records yet' : 'Records unavailable'}</p>
                     <p className="mt-1 text-[15px] leading-6 text-text-secondary">

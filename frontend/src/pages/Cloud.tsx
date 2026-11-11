@@ -111,6 +111,9 @@ export default function Cloud() {
 
         {!linkOk && <LinkDown hasData={s !== null} error={lastError} />}
 
+        {/* ── REAL vs SIMULATED legend chip ── */}
+        <RealSimLegend />
+
         {/* ── hero ── */}
         <section className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
           <div ref={leftRef} className="flex min-w-0 flex-col gap-5">
@@ -299,6 +302,62 @@ export default function Cloud() {
 }
 
 /** Link-down block in the History failure style: never a blank page. */
+const REAL_ITEMS: { label: string; real: boolean }[] = [
+  { label: 'orbits + TLEs', real: true },
+  { label: 'SGP4 propagation', real: true },
+  { label: 'conjunction validation', real: true },
+  { label: 'queue / leases / reaper', real: true },
+  { label: 'autoscaler + scheduler', real: true },
+  { label: 'persistence', real: true },
+  { label: 'storm events', real: false },
+  { label: 'operator mission value', real: false },
+  { label: 'delta-v', real: false },
+  { label: 'negotiation text', real: false },
+  { label: 'risk score (heuristic)', real: false },
+  { label: 'single host', real: false },
+];
+
+function RealSimLegend() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-3 flex flex-wrap items-start gap-3">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 border border-border-light bg-surface-muted/60 px-3 py-1.5 font-mono text-[12px] uppercase tracking-[0.12em] text-text-secondary transition-colors hover:border-accent hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        aria-expanded={open}
+      >
+        <span className="h-2 w-2 bg-success" />real
+        <span className="mx-1 text-border-light">/</span>
+        <span className="h-2 w-2 bg-warning" />simulated
+        <span className="ml-1">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="w-full border border-border bg-surface-muted/80 px-5 py-4">
+          <p className="mb-3 font-mono text-[11px] uppercase tracking-[0.14em] text-text-muted">
+            1 job = 1 conjunction — what is real and what is synthetic
+          </p>
+          <dl className="grid grid-cols-2 gap-x-10 gap-y-1.5 font-mono text-[13px] sm:grid-cols-3 lg:grid-cols-4">
+            {REAL_ITEMS.map(({ label, real }) => (
+              <div key={label} className="flex items-center gap-2">
+                <span className={`h-2 w-2 flex-none ${real ? 'bg-success' : 'bg-warning'}`} />
+                <dt className="text-text-secondary">{label}</dt>
+                <dd className={`ml-auto font-semibold ${real ? 'text-success-light' : 'text-warning-light'}`}>
+                  {real ? 'real' : 'sim'}
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <p className="mt-3 text-[13px] leading-6 text-text-muted">
+            Orbits and TLEs come from CelesTrak. SGP4 propagation, conjunction validation, queue mechanics (leases, reaper, scheduler, autoscaler) and persistence are real machinery. Storm events are synthetic load; operator mission value, delta-v, and negotiation text are template-based stubs. Risk score is a heuristic (not a formal collision probability). All runs on a single host.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LinkDown({ hasData, error }: { hasData: boolean; error: string | null }) {
   return (
     <section className="mt-5 border border-border bg-surface-muted/75" role="alert">

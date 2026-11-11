@@ -80,6 +80,32 @@ export type CloudRecentRow = {
   finished_at: string;
   /** retries + 1; present on the /api/cloud/recent response from recent_summaries_ext */
   attempts?: number;
+  /** D1: hours from enqueue to TCA (matches risk.py lead_h definition); null for old rows */
+  tca_h?: number | null;
+};
+
+/** D1: one satellite in a domain block. */
+export type SatBlock = {
+  norad: string;
+  name: string;
+  group: string;
+  operator: string;
+};
+
+/** D1: per-event domain data returned on /trace/{id} as `domain`. */
+export type DomainBlock = {
+  a: SatBlock | null;
+  b: SatBlock | null;
+  miss_km: number;
+  tca_utc: string;
+  lead_h: number | null;
+  risk: number;
+  risk_parts: { closeness: number; urgency: number; mission: number };
+  is_critical: boolean;
+  maneuvering_norad: string | null;
+  delta_v_mps: number | null;
+  residual_km: number | null;
+  validation_clear: boolean | null;
 };
 
 /** One attempt inside a trace (from GET /api/cloud/trace/{id}). */
@@ -104,6 +130,8 @@ export type CloudTrace = {
   attempts: TraceAttempt[];
   completed_at: string;
   final_status: string;
+  /** D1: domain block; present when result:<id> exists (may be absent for old traces) */
+  domain?: DomainBlock;
 };
 
 /** GET /api/cloud/resolution/{id}: same shapes the Negotiate page renders. */

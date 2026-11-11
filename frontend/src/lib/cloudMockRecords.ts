@@ -6,7 +6,7 @@
  * EXPIRED (404), to exercise that state.
  */
 import type { NegotiationMessage, Resolution } from '../components/globe/types';
-import { EXPIRED, type CloudRecentRow, type CloudResolution, type CloudTrace, type Result } from './cloudApi';
+import { EXPIRED, type CloudRecentRow, type CloudResolution, type CloudTrace, type DomainBlock, type Result } from './cloudApi';
 import type { MockScenario } from './cloudMock';
 
 const RATE = 2; // rows finished per second
@@ -37,6 +37,8 @@ function rowFor(scenario: MockScenario, seq: number, ageS: number): CloudRecentR
   const risk = critical ? 0.82 + rnd(seq, 2) * 0.09 : 0.14 + rnd(seq, 2) * 0.42;
   // seq % 9 === 4 → twoRounds (needs a retry); seq % 7 === 2 → also retried (extra variety)
   const retried = twoRounds || (!critical && seq % 7 === 2);
+  // tca_h: hours from enqueue to TCA — varies 1-24 h, deterministic per seq
+  const tca_h = Math.round((1 + rnd(seq, 10) * 23) * 100) / 100;
   return {
     event_id: idOf(seq), primary_id: pid, secondary_id: sid, primary_name: pn, secondary_name: sn,
     miss_km: Math.round(miss * 100) / 100, risk: Math.round(risk * 1000) / 1000, is_critical: critical,
@@ -47,6 +49,7 @@ function rowFor(scenario: MockScenario, seq: number, ageS: number): CloudRecentR
     latency_ms: critical ? Math.round(500 + rnd(seq, 4) * 400) : Math.round(2500 + rnd(seq, 4) * 21000),
     finished_at: new Date(Date.now() - ageS * 1000).toISOString(),
     attempts: retried ? 2 : 1,
+    tca_h,
   };
 }
 
@@ -103,6 +106,30 @@ export function mockResolution(scenario: MockScenario, id: string): Result<Cloud
   return { ok: true, data: { event_id: row.event_id, summary: row, transcript: msgs, resolution } };
 }
 
+function mockDomain(seq: number, row: CloudRecentRow): DomainBlock {
+  const tca_h = row.tca_h ?? (1 + rnd(seq, 10) * 23);
+  const miss = row.miss_km;
+  const closeness = Math.round(Math.max(0, Math.min(1, 1 - miss / 5)) * 1000) / 1000;
+  const urgency = Math.round(Math.max(0, Math.min(1, 1 - tca_h / 24)) * 1000) / 1000;
+  const mission = Math.round((0.4 + rnd(seq, 11) * 0.5) * 1000) / 1000;
+  const [pn, pid] = SATS[seq % SATS.length];
+  const [sn, sid] = SATS[(seq * 5 + 3) % SATS.length];
+  return {
+    a: { norad: pid, name: pn, group: 'starlink', operator: 'SpaceX Starlink' },
+    b: { norad: sid, name: sn, group: 'oneweb', operator: 'OneWeb / Eutelsat' },
+    miss_km: miss,
+    tca_utc: new Date(Date.now() + tca_h * 3600e3).toISOString(),
+    lead_h: Math.round(tca_h * 100) / 100,
+    risk: row.risk,
+    risk_parts: { closeness, urgency, mission },
+    is_critical: row.is_critical,
+    maneuvering_norad: row.maneuvering_agent === 'operator_A' ? pid : sid,
+    delta_v_mps: row.delta_v_mps,
+    residual_km: Math.round((miss + 3) * 100) / 100,
+    validation_clear: row.resolution_status === 'approved',
+  };
+}
+
 /**
  * Mock trace for any mock scenario.
  * - Rows whose seq matches the retried pattern → 2 attempts (lease_expired + completed).
@@ -129,6 +156,7 @@ export function mockTrace(eventId: string): Result<CloudTrace> {
     negotiate_ms: Math.round(negotiateMs * 10) / 10,
   };
 
+  const mockRow = rowFor('storm', seq, 0);
   return {
     ok: true,
     data: {
@@ -152,6 +180,7 @@ export function mockTrace(eventId: string): Result<CloudTrace> {
         : [cleanAttempt],
       completed_at: new Date((now - 15 + processMs / 1000) * 1000).toISOString(),
       final_status: 'approved',
+      domain: mockDomain(seq, mockRow),
     },
   };
 }

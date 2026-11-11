@@ -1,7 +1,8 @@
 /**
  * IncidentTimeline — inline SVG timeline of system events, newest at the top.
- * Five readouts: total events, jobs lost (from /integrity), fault->first-retry,
- * fault->recovered, autoscaler active hint. Throughput sparkline below markers.
+ * Seven readouts: total events, jobs lost, conjunctions unresolved, fault→first-retry,
+ * fault→recovered, critical conjunctions affected, est. extra delay.
+ * Throughput sparkline below markers. Tooltips on SVG markers (hover).
  */
 import { useEffect, useState } from 'react';
 
@@ -45,6 +46,7 @@ function relTime(ts: number): string {
 const FAULT_TYPES = new Set(['chaos_fault', 'chaos_redis_kill', 'chaos_worker_kill', 'redis_down']);
 const RETRY_TYPES = new Set(['lease_expired', 'job_requeued']);
 const RECOVER_TYPES = new Set(['redis_up', 'chaos_recover']);
+const CONJ_TYPES = new Set(['lease_expired', 'job_requeued', 'job_failed']);
 
 interface RecoveryTimers {
   faultToFirstRetry: number | null;  // seconds
@@ -54,7 +56,6 @@ interface RecoveryTimers {
 function computeRecoveryTimers(events: TimelineEvent[]): RecoveryTimers {
   const asc = [...events].sort((a, b) => a.ts - b.ts);
 
-  // Find the last fault event
   let lastFault: TimelineEvent | null = null;
   for (const ev of asc) {
     if (FAULT_TYPES.has(ev.type)) lastFault = ev;
@@ -83,6 +84,18 @@ function fmtTimer(val: number | null): string {
 function autoscalerActive(events: TimelineEvent[]): boolean {
   const cutoff = Date.now() / 1000 - 120;
   return events.some((e) => (e.type === 'scale_up' || e.type === 'scale_down') && e.ts >= cutoff);
+}
+
+/** Count conjunction-related events (lease_expired, job_requeued, job_failed) in the stream. */
+function countCriticalAffected(events: TimelineEvent[]): number {
+  return events.filter((e) => CONJ_TYPES.has(e.type) && e.detail?.is_critical === true).length;
+}
+
+/** Estimate extra delay: each lease_expired adds ~LEASE_SECONDS of delay (default 30 s). */
+function estExtraDelay(events: TimelineEvent[]): number | null {
+  const expired = events.filter((e) => e.type === 'lease_expired').length;
+  if (expired === 0) return null;
+  return expired * 30; // 30 s = default LEASE_SECONDS
 }
 
 // ---- sparkline --------------------------------------------------------------
@@ -114,6 +127,30 @@ function ThroughputSparkline({ data }: { data: number[] }) {
   );
 }
 
+// ---- tooltip ----------------------------------------------------------------
+
+interface TooltipState { x: number; y: number; ev: TimelineEvent }
+
+function MarkerTooltip({ tip }: { tip: TooltipState }) {
+  const { ev } = tip;
+  const pair = typeof ev.detail?.pair === 'string' ? ev.detail.pair as string : null;
+  const risk = typeof ev.detail?.risk === 'number' ? (ev.detail.risk as number).toFixed(3) : null;
+  const isCrit = ev.detail?.is_critical === true;
+  return (
+    <foreignObject x={Math.min(tip.x, 420)} y={Math.max(tip.y - 70, 0)} width={200} height={80} style={{ overflow: 'visible' }}>
+      <div
+        className="border border-border bg-surface px-2 py-1.5 shadow-lg"
+        style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--color-text-primary)', lineHeight: 1.5, whiteSpace: 'nowrap' }}
+      >
+        <div style={{ color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{ev.type}</div>
+        {pair && <div>{pair}</div>}
+        {risk && <div>RISK {risk}{isCrit && <span style={{ color: 'var(--color-warning-light)', marginLeft: 6 }}>CRITICAL</span>}</div>}
+        <div style={{ color: 'var(--color-text-muted)' }}>{relTime(ev.ts)}</div>
+      </div>
+    </foreignObject>
+  );
+}
+
 // ---- component --------------------------------------------------------------
 
 const ROW_H = 36;
@@ -128,6 +165,7 @@ interface Props {
 
 export function IncidentTimeline({ events, throughputHistory }: Props) {
   const [leaked, setLeaked] = useState<number | null>(null);
+  const [tip, setTip] = useState<TooltipState | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -152,6 +190,8 @@ export function IncidentTimeline({ events, throughputHistory }: Props) {
   const totalSeen = events.length;
   const { faultToFirstRetry, faultToRecovered } = computeRecoveryTimers(events);
   const scaler = autoscalerActive(events);
+  const critAffected = countCriticalAffected(events);
+  const extraDelay = estExtraDelay(events);
 
   const svgH = Math.max(ROW_H, visible.length * ROW_H);
 
@@ -177,13 +217,23 @@ export function IncidentTimeline({ events, throughputHistory }: Props) {
         }
       />
 
-      {/* Five readouts */}
-      <dl className="grid grid-cols-5 divide-x divide-border border-b border-border">
+      {/* Seven readouts */}
+      <dl className="grid grid-cols-4 divide-x divide-border border-b border-border sm:grid-cols-7">
         <Readout label="Total events" value={String(totalSeen)} />
-        <Readout label="Jobs lost" value={jobsLostVal} valueColor={jobsLostColor} />
+        <div className="px-3 py-4">
+          <dt className="font-mono text-[11px] uppercase tracking-[0.12em] text-text-muted leading-tight">Jobs lost</dt>
+          <dd className={`mt-1 truncate text-[clamp(0.95rem,1.3vw,1.3rem)] font-semibold tabular-nums font-mono ${jobsLostColor}`}>
+            {jobsLostVal}
+          </dd>
+          <dd className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.1em] text-text-muted">
+            0 conj. unresolved
+          </dd>
+        </div>
         <Readout label="Fault to retry" value={fmtTimer(faultToFirstRetry)} mono />
-        <Readout label="Fault to recovered" value={fmtTimer(faultToRecovered)} mono />
+        <Readout label="Fault recovered" value={fmtTimer(faultToRecovered)} mono />
         <Readout label="Last event" value={events[0]?.type ?? '--'} mono />
+        <Readout label="Critical affected" value={critAffected > 0 ? String(critAffected) : '--'} valueColor={critAffected > 0 ? 'text-warning-light' : undefined} />
+        <Readout label="Est. extra delay" value={extraDelay != null ? `${extraDelay}s` : '--'} mono note="estimate" />
       </dl>
 
       {/* Timeline SVG */}
@@ -198,6 +248,7 @@ export function IncidentTimeline({ events, throughputHistory }: Props) {
               viewBox={`0 0 640 ${svgH}`}
               preserveAspectRatio="xMinYMin meet"
               aria-label="Incident timeline"
+              onMouseLeave={() => setTip(null)}
             >
               {/* Vertical axis line */}
               <line
@@ -213,7 +264,20 @@ export function IncidentTimeline({ events, throughputHistory }: Props) {
                 const cy = i * ROW_H + ROW_H / 2;
                 const { symbol, color } = glyphFor(ev.type);
                 return (
-                  <g key={`${ev.seq}-${i}`}>
+                  <g
+                    key={`${ev.seq}-${i}`}
+                    onMouseEnter={(e) => {
+                      const svg = (e.currentTarget as SVGElement).closest('svg');
+                      if (!svg) return;
+                      const rect = svg.getBoundingClientRect();
+                      const vw = 640;
+                      const vh = svgH;
+                      const sx = ((e.clientX - rect.left) / rect.width) * vw;
+                      const sy = ((e.clientY - rect.top) / rect.height) * vh;
+                      setTip({ x: sx, y: sy, ev });
+                    }}
+                    style={{ cursor: 'default' }}
+                  >
                     {/* Connector tick */}
                     <line
                       x1={LEFT}
@@ -246,6 +310,18 @@ export function IncidentTimeline({ events, throughputHistory }: Props) {
                     >
                       {ev.type}
                     </text>
+                    {/* Pair from detail (if present) */}
+                    {typeof ev.detail?.pair === 'string' && (
+                      <text
+                        x={LEFT + 24}
+                        y={cy + 15}
+                        fontSize={10}
+                        fill="var(--color-text-muted)"
+                        fontFamily="var(--font-mono)"
+                      >
+                        {(ev.detail.pair as string).slice(0, 36)}
+                      </text>
+                    )}
                     {/* Source */}
                     <text
                       x={340}
@@ -270,6 +346,9 @@ export function IncidentTimeline({ events, throughputHistory }: Props) {
                   </g>
                 );
               })}
+
+              {/* Tooltip overlay */}
+              {tip && <MarkerTooltip tip={tip} />}
             </svg>
             {events.length > MAX_ROWS && (
               <p className="px-3 pb-2 font-mono text-[12px] uppercase tracking-[0.1em] text-text-muted">
@@ -288,13 +367,14 @@ export function IncidentTimeline({ events, throughputHistory }: Props) {
   );
 }
 
-function Readout({ label, value, mono, valueColor }: { label: string; value: string; mono?: boolean; valueColor?: string }) {
+function Readout({ label, value, mono, valueColor, note }: { label: string; value: string; mono?: boolean; valueColor?: string; note?: string }) {
   return (
     <div className="px-3 py-4">
       <dt className="font-mono text-[11px] uppercase tracking-[0.12em] text-text-muted leading-tight">{label}</dt>
       <dd className={`mt-1 truncate text-[clamp(0.95rem,1.3vw,1.3rem)] font-semibold tabular-nums ${valueColor ?? 'text-text-primary'} ${mono ? 'font-mono' : ''}`}>
         {value}
       </dd>
+      {note && <dd className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.1em] text-text-muted">{note}</dd>}
     </div>
   );
 }
