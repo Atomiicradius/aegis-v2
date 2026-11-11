@@ -183,6 +183,29 @@ pytest backend/cloud -q                              # host; PYTHONPATH must con
 docker compose down
 ```
 
+## Observability status (branch `cloud-observability`)
+
+All observability work is strictly additive; existing endpoints, Redis keys, and worker behaviour are unchanged.
+
+### Block 1 — `obs-1-ok`
+- **Trace recording** (`backend/cloud/trace.py`): per-job attempt waterfall in `trace:<id>` (1 h TTL). Fields: `enqueued_at`, `risk`, `is_critical`, `attempts[]` (outcome, `process_start_ms`, `process_end_ms`, `negotiate_ms`), `completed_at`, `final_status`.
+- **Timeline** (`backend/cloud/timeline.py`): system-level event log in `timeline` capped list (2 000 entries). `GET /api/cloud/timeline?since_seq=N` returns events ascending. `GET /api/cloud/trace/{id}` returns the per-job waterfall.
+- **Kill switches**: `RECORD_TRACES=0`, `TIMELINE=0` (both default **on**).
+- **Overhead**: 0.67 ms/job (budget 1.5 ms). Throughput with traces+timeline on: **11.65 jobs/s**.
+- **Redis dedup keys** (Block 3+): `timeline:outage:lock` (SET NX, 7 s TTL) — first worker to detect an outage wins; `timeline:recovery:lock` (SET NX, 7 s TTL) — first worker to see recovery wins. Two outages >7 s apart each produce their own pair.
+
+### Block 2 — `obs-2-ok`
+- **TraceWaterfall** (`frontend/src/components/cloud/TraceWaterfall.tsx`): inline-SVG per-attempt waterfall shown on every record (not only retried). One bar per attempt labelled **NEG + VAL** (single measured segment; validate = total − negotiate, derived). Dashed tick marks the negotiate boundary; hover shows the derivation tooltip. Failure markers (LEASE EXPIRED / ERROR / DUPLICATE DISCARDED) driven by `attempt.outcome`. All colours via CSS tokens.
+- **RETRIED ×N badge**: on resolution-records table rows and waterfall header when `attempts > 1`.
+- **Mock parity**: `mockTrace()` returns a 1- or 2-attempt trace keyed by event seq, matching the `attempts` field on mock rows.
+- **Screenshots**: `results/observability/` — live retried + clean, mock retried + clean.
+- **ISS-CSS / Negotiate / History**: zero files changed across all Block 1+2 commits.
+
+### Block 3 — `obs-3-ok`
+- **Timeline dedup** (`backend/cloud/timeline.py`): replaced 30 s bucket with SET NX lock (`_OUTAGE_LOCK_TTL = 7 s`). Two outages 15 s apart produce two pairs; one outage seen by four workers produces one pair.
+- **Baseline throughput** (RECORD_TRACES=0 TIMELINE=0): reported by `check_trace.py --full` Test 3c.
+- **Running overhead total** (Blocks 1–3): reported at the end of `check_trace.py`.
+
 ## Gotchas
 - Same `--seed` re-run without a reset is a **no-op**: event ids repeat and finished jobs are skipped. Reset first (`--reset`).
 - `verify_queue.py`, `bench_run.py`, `benchmark.py`, `storm.py --reset` all **FLUSHDB**.

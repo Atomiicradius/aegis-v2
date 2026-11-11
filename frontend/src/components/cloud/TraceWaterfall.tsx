@@ -185,15 +185,28 @@ function AttemptRow({ attempt, y, maxMs }: { attempt: TraceAttempt; y: number; m
             style={{ fill: 'var(--color-accent-muted)', stroke: 'var(--color-accent)', strokeWidth: 0.8 }}
             rx={1}
           />
-          {/* negotiate boundary tick */}
+          {/* negotiate boundary tick with tooltip explaining derivation */}
           {negPx > 2 && negPx < totalPx - 2 && (
-            <line
-              x1={barX + negPx}
-              y1={y + 5}
-              x2={barX + negPx}
-              y2={y + ROW_H - 5}
-              style={{ stroke: 'var(--color-border-light)', strokeWidth: 1.2, strokeDasharray: '2 2' }}
-            />
+            <g>
+              <line
+                x1={barX + negPx}
+                y1={y + 5}
+                x2={barX + negPx}
+                y2={y + ROW_H - 5}
+                style={{ stroke: 'var(--color-border-light)', strokeWidth: 1.2, strokeDasharray: '2 2' }}
+              />
+              {/* wider invisible hit target so the title tooltip is easy to hover */}
+              <rect
+                x={barX + negPx - 5}
+                y={y + 5}
+                width={10}
+                height={ROW_H - 10}
+                fill="transparent"
+                style={{ cursor: 'help' }}
+              >
+                <title>{`negotiate_ms = ${negotiate_ms.toFixed(1)} ms (measured). The boundary is derived: validate = total (${process_end_ms.toFixed(1)} ms) − negotiate; covers safety validation and other post-negotiation job processing.`}</title>
+              </rect>
+            </g>
           )}
           {/* bar label: show when bar is wide enough */}
           {totalPx >= 60 && (
