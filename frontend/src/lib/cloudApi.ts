@@ -53,6 +53,32 @@ export type CloudRecentRow = {
   delta_v_mps: number;
   latency_ms: number;
   finished_at: string;
+  /** retries + 1; present on the /api/cloud/recent response from recent_summaries_ext */
+  attempts?: number;
+};
+
+/** One attempt inside a trace (from GET /api/cloud/trace/{id}). */
+export type TraceAttempt = {
+  n: number;
+  worker_id: string;
+  leased_at: number;
+  lease_deadline: number;
+  outcome: string;
+  /** ms from perf_counter start to end of job processing (0 when lease_expired with no data) */
+  process_end_ms: number;
+  /** ms spent in engine.run_negotiation() — the NEGOTIATE segment */
+  negotiate_ms: number;
+};
+
+/** Full trace from GET /api/cloud/trace/{id} (trace.py structure). */
+export type CloudTrace = {
+  event_id: string;
+  enqueued_at: string;
+  risk: number;
+  is_critical: boolean;
+  attempts: TraceAttempt[];
+  completed_at: string;
+  final_status: string;
 };
 
 /** GET /api/cloud/resolution/{id}: same shapes the Negotiate page renders. */
@@ -135,6 +161,15 @@ export async function fetchCloudResolution(eventId: string, signal?: AbortSignal
   return isRecord(d) && Array.isArray(d.transcript) && isRecord(d.resolution)
     ? { ok: true, data: d as unknown as CloudResolution }
     : { ok: false, error: 'unexpected resolution payload' };
+}
+
+export async function fetchCloudTrace(eventId: string, signal?: AbortSignal): Promise<Result<CloudTrace>> {
+  const result = await request(`/api/cloud/trace/${encodeURIComponent(eventId)}`, { signal });
+  if (!result.ok) return result;
+  const d = result.data;
+  return isRecord(d) && Array.isArray((d as Record<string, unknown>).attempts)
+    ? { ok: true, data: d as unknown as CloudTrace }
+    : { ok: false, error: 'unexpected trace payload' };
 }
 
 export const postStorm = (req: StormRequest) => post('/api/cloud/storm', req);

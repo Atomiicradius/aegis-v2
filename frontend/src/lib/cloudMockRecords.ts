@@ -6,7 +6,7 @@
  * EXPIRED (404), to exercise that state.
  */
 import type { NegotiationMessage, Resolution } from '../components/globe/types';
-import { EXPIRED, type CloudRecentRow, type CloudResolution, type Result } from './cloudApi';
+import { EXPIRED, type CloudRecentRow, type CloudResolution, type CloudTrace, type Result } from './cloudApi';
 import type { MockScenario } from './cloudMock';
 
 const RATE = 2; // rows finished per second
@@ -35,6 +35,8 @@ function rowFor(scenario: MockScenario, seq: number, ageS: number): CloudRecentR
   const twoRounds = !critical && seq % 9 === 4;
   const miss = critical ? 0.3 + rnd(seq, 1) * 0.3 : 0.6 + rnd(seq, 1) * 4.2;
   const risk = critical ? 0.82 + rnd(seq, 2) * 0.09 : 0.14 + rnd(seq, 2) * 0.42;
+  // seq % 9 === 4 → twoRounds (needs a retry); seq % 7 === 2 → also retried (extra variety)
+  const retried = twoRounds || (!critical && seq % 7 === 2);
   return {
     event_id: idOf(seq), primary_id: pid, secondary_id: sid, primary_name: pn, secondary_name: sn,
     miss_km: Math.round(miss * 100) / 100, risk: Math.round(risk * 1000) / 1000, is_critical: critical,
@@ -44,6 +46,7 @@ function rowFor(scenario: MockScenario, seq: number, ageS: number): CloudRecentR
     delta_v_mps: failed ? 0 : Math.round((1.5 + rnd(seq, 3) * 2.5) * 10) / 10,
     latency_ms: critical ? Math.round(500 + rnd(seq, 4) * 400) : Math.round(2500 + rnd(seq, 4) * 21000),
     finished_at: new Date(Date.now() - ageS * 1000).toISOString(),
+    attempts: retried ? 2 : 1,
   };
 }
 
@@ -98,4 +101,57 @@ export function mockResolution(scenario: MockScenario, id: string): Result<Cloud
     status: ok ? 'approved' : 'no_safe_maneuver_found',
   };
   return { ok: true, data: { event_id: row.event_id, summary: row, transcript: msgs, resolution } };
+}
+
+/**
+ * Mock trace for any mock scenario.
+ * - Rows whose seq matches the retried pattern → 2 attempts (lease_expired + completed).
+ * - All other rows → 1 attempt (clean, completed).
+ * This matches the attempts field set by rowFor() so the table badge and waterfall agree.
+ */
+export function mockTrace(eventId: string): Result<CloudTrace> {
+  const now = Date.now() / 1000;
+  const seq = seqOf(eventId);
+  const twoRounds = seq % 9 === 4;
+  const retriedExtra = seq % 7 === 2;
+  const retried = twoRounds || retriedExtra;
+
+  const negotiateMs = 38 + rnd(seq, 8) * 20;    // 38–58 ms
+  const processMs = negotiateMs + 7 + rnd(seq, 9) * 6;  // validate = 7–13 ms
+
+  const cleanAttempt = {
+    n: retried ? 2 : 1,
+    worker_id: `cafef00d${String(seq).padStart(4, '0')}`,
+    leased_at: now - 15,
+    lease_deadline: now - 5,
+    outcome: 'completed' as const,
+    process_end_ms: Math.round(processMs * 10) / 10,
+    negotiate_ms: Math.round(negotiateMs * 10) / 10,
+  };
+
+  return {
+    ok: true,
+    data: {
+      event_id: eventId,
+      enqueued_at: new Date((now - 30) * 1000).toISOString(),
+      risk: Math.round((0.4 + rnd(seq, 7) * 0.5) * 100) / 100,
+      is_critical: false,
+      attempts: retried
+        ? [
+            {
+              n: 1,
+              worker_id: `deadbeef${String(seq).padStart(4, '0')}`,
+              leased_at: now - 28,
+              lease_deadline: now - 18,
+              outcome: 'lease_expired' as const,
+              process_end_ms: 0,
+              negotiate_ms: 0,
+            },
+            cleanAttempt,
+          ]
+        : [cleanAttempt],
+      completed_at: new Date((now - 15 + processMs / 1000) * 1000).toISOString(),
+      final_status: 'approved',
+    },
+  };
 }

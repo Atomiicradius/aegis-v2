@@ -42,6 +42,7 @@ function Row({ row, index, selected, onToggle }: { row: CloudRecentRow; index: n
         <span className="flex flex-wrap items-center gap-2">
           <StatusChip tone={outcomeTone(row.resolution_status)} label={row.resolution_status === 'no_safe_maneuver_found' ? 'no safe maneuver' : row.resolution_status.replace(/_/g, ' ')} />
           {row.is_critical && <StatusChip tone="warning" label="critical" />}
+          {(row.attempts ?? 0) > 1 && <StatusChip tone="danger" label={`retried ×${row.attempts! - 1}`} />}
         </span>
       </td>
       <td className="border-r border-border px-3 py-3 text-right font-mono text-[14px] tabular-nums text-text-primary">{row.delta_v_mps > 0 ? `${row.delta_v_mps.toFixed(1)} m/s` : '--'}</td>

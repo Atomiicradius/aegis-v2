@@ -3,9 +3,11 @@ import { useEffect, useRef } from 'react';
 import { EXPIRED, type CloudRecentRow } from '../../lib/cloudApi';
 import type { MockScenario } from '../../lib/cloudMock';
 import { useCloudResolution } from '../../lib/useCloudRecords';
+import { useTrace } from '../../lib/useTrace';
 import { NegotiationConsole } from '../negotiation/NegotiationConsole';
 import { ResolutionCard } from '../negotiation/ResolutionCard';
 import { LeftRuleCallout } from './LeftRuleCallout';
+import { TraceWaterfall } from './TraceWaterfall';
 
 /**
  * Transcript + resolution of one record, drawn by the ORIGINAL Negotiate components
@@ -14,6 +16,7 @@ import { LeftRuleCallout } from './LeftRuleCallout';
  */
 export function RecordDetail({ row, mock, onClose }: { row: CloudRecentRow; mock: MockScenario | null; onClose: () => void }) {
   const { status, result } = useCloudResolution(row.event_id, mock);
+  const traceState = useTrace(row.event_id, mock);
   const ref = useRef<HTMLDivElement>(null);
 
   // bring the opened record into view (it renders below the table, possibly under the fold)
@@ -56,6 +59,9 @@ export function RecordDetail({ row, mock, onClose }: { row: CloudRecentRow; mock
         </div>
       ) : (
         <div className="cloud-legible">
+          {traceState.status === 'done' && traceState.result?.ok && (
+            <TraceWaterfall trace={traceState.result.data} />
+          )}
           <NegotiationConsole messages={result.data.transcript} instant />
           <ResolutionCard key={row.event_id} resolution={result.data.resolution} showTrajectoryLink={false} residualAsDistance />
         </div>
