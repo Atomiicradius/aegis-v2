@@ -5,7 +5,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 
-import { fetchRaceResult, postRaceReset, postRaceStart, type RaceLane, type RacePair, type RaceResult } from '../../lib/cloudApi';
+import { fetchRaceResult, postRaceReset, postRaceStart, type RaceLane, type RacePair, type RaceResult, type RaceRunning } from '../../lib/cloudApi';
 import type { MockScenario } from '../../lib/cloudMock';
 import { mockRaceResult } from '../../lib/cloudMockRecords';
 import { PanelHeader } from './PanelHeader';
@@ -32,8 +32,8 @@ function LeadGauge({ pct, missed }: { pct: number; missed: boolean }) {
 // ---- one critical pair row --------------------------------------------------
 function PairRow({ pair, scale }: { pair: RacePair; scale: ClockScale }) {
   const lead = pair.lead_h ?? 24;
-  const pct = leadConsumedPct(pair.cumulative_ms_before, pair.latency_ms, lead, scale);
-  const missed = isTcaMissed(pair.cumulative_ms_before, pair.latency_ms, lead, scale);
+  const pct = leadConsumedPct(pair.resolution_ms, lead, scale);
+  const missed = isTcaMissed(pair.resolution_ms, lead, scale);
 
   return (
     <li className={`px-4 py-2.5 border-b border-border last:border-0 ${missed ? 'border-l-2 border-l-danger' : ''}`}>
@@ -57,7 +57,7 @@ function PairRow({ pair, scale }: { pair: RacePair; scale: ClockScale }) {
         <span className={`${MONO} text-text-muted shrink-0`}>{pct}%</span>
         <LeadGauge pct={pct} missed={missed} />
         <span className={`${MONO} shrink-0 ${missed ? 'text-danger-light' : 'text-text-muted'}`}>
-          {pair.latency_ms}ms
+          {pair.resolution_ms}ms
         </span>
       </div>
     </li>
@@ -67,7 +67,7 @@ function PairRow({ pair, scale }: { pair: RacePair; scale: ClockScale }) {
 // ---- lane panel -------------------------------------------------------------
 function LanePanel({ lane, scale }: { lane: RaceLane; scale: ClockScale }) {
   const missed = lane.critical_pairs.filter(
-    (p) => isTcaMissed(p.cumulative_ms_before, p.latency_ms, p.lead_h ?? 24, scale),
+    (p) => isTcaMissed(p.resolution_ms, p.lead_h ?? 24, scale),
   ).length;
 
   const tone = lane.policy === 'priority' ? 'warning' : 'accent';
@@ -94,15 +94,15 @@ function LanePanel({ lane, scale }: { lane: RaceLane; scale: ClockScale }) {
       {/* Stats row */}
       <dl className="grid grid-cols-3 divide-x divide-border border-b border-border">
         <div className="px-4 py-3">
-          <dt className={`${MONO} text-text-muted`}>Crit avg</dt>
+          <dt className={`${MONO} text-text-muted`}>Crit res avg</dt>
           <dd className={`mt-0.5 font-mono text-[1.25rem] font-semibold tabular-nums ${toneText}`}>
-            {lane.critical_latency_ms.avg}<span className="ml-1 text-sm text-text-muted">ms</span>
+            {lane.critical_resolution_ms.avg}<span className="ml-1 text-sm text-text-muted">ms</span>
           </dd>
         </div>
         <div className="px-4 py-3">
-          <dt className={`${MONO} text-text-muted`}>Crit max</dt>
+          <dt className={`${MONO} text-text-muted`}>Drain</dt>
           <dd className={`mt-0.5 font-mono text-[1.25rem] font-semibold tabular-nums text-text-primary`}>
-            {lane.critical_latency_ms.max}<span className="ml-1 text-sm text-text-muted">ms</span>
+            {lane.drain_ms.toLocaleString()}<span className="ml-1 text-sm text-text-muted">ms</span>
           </dd>
         </div>
         <div className="px-4 py-3">
@@ -129,11 +129,14 @@ function LanePanel({ lane, scale }: { lane: RaceLane; scale: ClockScale }) {
         )}
       </div>
 
-      {/* Total duration */}
-      <div className="border-t border-border px-4 py-2">
+      {/* Footer */}
+      <div className="border-t border-border px-4 py-2 flex gap-4">
         <span className={`${MONO} text-text-muted`}>
-          lane total {lane.total_duration_ms.toLocaleString()} ms real
+          drain {lane.drain_ms.toLocaleString()} ms wall-clock
         </span>
+        {lane.failed_jobs > 0 && (
+          <span className={`${MONO} text-danger-light`}>{lane.failed_jobs} failed</span>
+        )}
       </div>
     </div>
   );
@@ -141,8 +144,8 @@ function LanePanel({ lane, scale }: { lane: RaceLane; scale: ClockScale }) {
 
 // ---- advantage badge --------------------------------------------------------
 function AdvantBadge({ result }: { result: RaceResult }) {
-  const fifoAvg = result.fifo.critical_latency_ms.avg;
-  const prioAvg = result.priority.critical_latency_ms.avg;
+  const fifoAvg = result.fifo.critical_resolution_ms.avg;
+  const prioAvg = result.priority.critical_resolution_ms.avg;
   if (prioAvg === 0 || fifoAvg === 0) return null;
   const factor = fifoAvg / prioAvg;
   return (
@@ -156,12 +159,27 @@ function AdvantBadge({ result }: { result: RaceResult }) {
   );
 }
 
+// ---- live progress bar during running ----------------------------------------
+function ProgressBar({ done, total, label }: { done: number; total: number; label: string }) {
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  return (
+    <div className="flex items-center gap-3 py-1">
+      <span className={`${MONO} w-24 shrink-0 text-text-muted`}>{label}</span>
+      <div className="flex-1 h-1.5 rounded-full bg-border overflow-hidden">
+        <div className="h-full rounded-full bg-accent transition-all duration-500" style={{ width: `${pct}%` }} />
+      </div>
+      <span className={`${MONO} shrink-0 text-text-muted`}>{done}/{total}</span>
+    </div>
+  );
+}
+
 // ---- main component ---------------------------------------------------------
 type Props = { mock: MockScenario | null };
 
 export function RacePanel({ mock }: Props) {
   const [scale, setScale] = useState<ClockScale>(DEFAULT_SCALE);
   const [result, setResult] = useState<RaceResult | null>(null);
+  const [partial, setPartial] = useState<RaceRunning | null>(null);
   const [status, setStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const [busy, setBusy] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -174,13 +192,17 @@ export function RacePanel({ mock }: Props) {
     }
   }, [mock]);
 
-  // Poll for result while running
+  // Poll for result while running — also surfaces partial lane data
   useEffect(() => {
     if (status !== 'running' || mock) return;
     pollRef.current = setInterval(async () => {
       const r = await fetchRaceResult();
       if (!r.ok) return;
-      if ('status' in r.data && r.data.status === 'running') return;
+      if ('status' in r.data && r.data.status === 'running') {
+        setPartial(r.data as RaceRunning);
+        return;
+      }
+      setPartial(null);
       setResult(r.data as RaceResult);
       setStatus('done');
       if (pollRef.current) clearInterval(pollRef.current);
@@ -192,8 +214,9 @@ export function RacePanel({ mock }: Props) {
     if (mock) return;
     setBusy(true);
     setResult(null);
+    setPartial(null);
     setStatus('running');
-    await postRaceStart({ n: 60, critical: 5, critical_after_s: 2 });
+    await postRaceStart({ n: 300, critical: 3, seed: 42, critical_offset_s: 2 });
     setBusy(false);
   }
 
@@ -202,6 +225,7 @@ export function RacePanel({ mock }: Props) {
     setBusy(true);
     await postRaceReset();
     setResult(null);
+    setPartial(null);
     setStatus('idle');
     setBusy(false);
   }
@@ -243,14 +267,22 @@ export function RacePanel({ mock }: Props) {
 
       {status === 'idle' && !result && (
         <p className={`${MONO} px-5 py-8 text-text-muted`}>
-          {mock ? 'no race scenario active' : 'press START RACE to run 60 jobs (5 critical) through both policies simultaneously'}
+          {mock ? 'no race scenario active' : 'press START RACE to run 300 jobs (3 critical, seed 42) through both policies simultaneously'}
         </p>
       )}
 
       {status === 'running' && (
-        <p className={`${MONO} animate-pulse px-5 py-8 text-text-muted`}>
-          race running — processing 60 jobs × 2 lanes…
-        </p>
+        <div className="border-b border-border px-5 py-4">
+          <p className={`${MONO} animate-pulse text-text-muted mb-3`}>
+            race running — 300 jobs × 2 real worker lanes…
+          </p>
+          {partial && (
+            <div className="space-y-1">
+              <ProgressBar done={partial.fifo_done} total={partial.total} label="FIFO" />
+              <ProgressBar done={partial.prio_done} total={partial.total} label="PRIORITY" />
+            </div>
+          )}
+        </div>
       )}
 
       {result && (
@@ -261,9 +293,18 @@ export function RacePanel({ mock }: Props) {
             <LanePanel lane={result.priority} scale={scale} />
           </div>
           <div className="border-t border-border px-5 py-2 font-mono text-[11px] uppercase tracking-[0.1em] text-text-muted">
-            {result.n} total jobs · {result.critical} critical · race completed {new Date(result.enqueued_at).toLocaleTimeString()}
+            {result.n} total jobs · {result.critical} critical · seed {result.seed}
+            {result.start_skew_ms != null && <> · start skew {result.start_skew_ms} ms</>}
+            {' · '}race completed {new Date(result.enqueued_at).toLocaleTimeString()}
           </div>
         </>
+      )}
+
+      {status === 'running' && partial?.fifo && partial?.priority && (
+        <div className="grid gap-px border-t border-border bg-border lg:grid-cols-2">
+          <LanePanel lane={partial.fifo} scale={scale} />
+          <LanePanel lane={partial.priority} scale={scale} />
+        </div>
       )}
     </section>
   );

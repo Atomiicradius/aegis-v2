@@ -43,5 +43,34 @@ services:
       - "8010:8000"   # host 8010: the original app backend owns :8000
     environment: *aegis-env
 
+  # Race lane workers — started only with --profile race.
+  # QUEUE_NS isolates them completely from the main queue (all keys prefixed fifo: or prio:).
+  # No container_name so Docker Compose can run multiple replicas via --scale.
+  worker_fifo:
+    image: aegis-v2
+    command: python -m backend.cloud.worker
+    depends_on:
+      - redis
+    profiles: [race]
+    environment:
+      <<: *aegis-env
+      QUEUE_NS: fifo
+      POLICY: fifo
+    deploy:
+      replicas: 2
+
+  worker_prio:
+    image: aegis-v2
+    command: python -m backend.cloud.worker
+    depends_on:
+      - redis
+    profiles: [race]
+    environment:
+      <<: *aegis-env
+      QUEUE_NS: prio
+      POLICY: priority
+    deploy:
+      replicas: 2
+
 volumes:
   redis-data:

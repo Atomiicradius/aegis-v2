@@ -256,50 +256,63 @@ export type RacePair = {
   event_id: string;
   primary_name: string;
   secondary_name: string;
-  miss_km: number;
   risk: number;
-  is_critical: true;
   lead_h: number | null;
-  resolution_status: string;
+  /** wall-clock ms: finished_at − enqueued_at (includes queue wait) */
+  resolution_ms: number;
+  /** processing-only ms: finished_at − started_at */
   latency_ms: number;
-  /** real ms elapsed before this pair's processing started (for SimClock TCA math) */
-  cumulative_ms_before: number;
-  lane: 'fifo' | 'priority';
+  lane: 'fifo' | 'prio';
 };
 
-/** One lane of a completed race. */
+/** One lane of a completed (or partial) race. */
 export type RaceLane = {
-  policy: 'fifo' | 'priority';
+  policy: string;
   total_jobs: number;
   critical_jobs: number;
-  critical_latency_ms: { avg: number; max: number };
+  failed_jobs: number;
   critical_resolution_ms: { avg: number; max: number };
+  critical_latency_ms: { avg: number; max: number };
   critical_pairs: RacePair[];
-  total_duration_ms: number;
-  started_at: string;
-  finished_at: string;
+  drain_ms: number;
 };
 
-/** Result of GET /api/cloud/race/result. */
+/** Full result of GET /api/cloud/race/result when status=done. */
 export type RaceResult = {
   fifo: RaceLane;
   priority: RaceLane;
   n: number;
   critical: number;
+  seed: number;
+  enqueued_at: string;
+  start_skew_ms: number | null;
+  total: number;
+};
+
+/** Partial result while status=running. */
+export type RaceRunning = {
+  status: 'running';
+  total: number;
+  fifo_done: number;
+  prio_done: number;
+  fifo: RaceLane | null;
+  priority: RaceLane | null;
+  n: number;
+  critical: number;
   enqueued_at: string;
 };
 
-export type RaceStartReq = { n: number; critical: number; critical_after_s: number };
+export type RaceStartReq = { n: number; critical: number; seed: number; critical_offset_s: number };
 
 export const postRaceStart = (req: RaceStartReq) => post('/api/cloud/race/start', req);
 export const postRaceReset = () => post('/api/cloud/race/reset', {});
 
-export async function fetchRaceResult(signal?: AbortSignal): Promise<Result<RaceResult | { status: 'running' }>> {
+export async function fetchRaceResult(signal?: AbortSignal): Promise<Result<RaceResult | RaceRunning>> {
   const result = await request('/api/cloud/race/result', { signal });
   if (!result.ok) return result;
   const d = result.data;
   if (isRecord(d) && (d as Record<string, unknown>).status === 'running') {
-    return { ok: true, data: { status: 'running' } };
+    return { ok: true, data: d as unknown as RaceRunning };
   }
   return isRecord(d) && isRecord((d as Record<string, unknown>).fifo)
     ? { ok: true, data: d as unknown as RaceResult }

@@ -197,55 +197,49 @@ const RACE_PAIRS: [string, string][] = [
   ['LEMUR-2-KAITLYN', 'QIANFAN-79'],
 ];
 
-function mockRacePair(idx: number, policy: 'fifo' | 'priority', cumulativeMs: number): RacePair {
+function mockRacePair(idx: number, policy: 'fifo' | 'prio'): RacePair {
   const [pn, sn] = RACE_PAIRS[idx % RACE_PAIRS.length];
   const lead_h = Math.round((0.3 + rnd(idx, 11) * 0.9) * 100) / 100; // 0.3..1.2 h
-  const latMs = Math.round(140 + rnd(idx, 12) * 60); // 140-200 ms per job
+  const latMs = Math.round(140 + rnd(idx, 12) * 60); // 140-200 ms (processing time)
+  // resolution = wall-clock: fifo jobs wait behind ~200 normal jobs; prio jumps to front
+  const resMs = policy === 'fifo'
+    ? Math.round((200 + idx * 20) * latMs * 0.01 + latMs) // long queue wait
+    : Math.round(idx * latMs * 0.3 + latMs);              // near-front
   return {
     event_id: idOf(1000 + idx),
     primary_name: pn,
     secondary_name: sn,
-    miss_km: Math.round((0.2 + rnd(idx, 13) * 0.4) * 100) / 100,
     risk: Math.round((0.82 + rnd(idx, 14) * 0.09) * 1000) / 1000,
-    is_critical: true,
     lead_h,
-    resolution_status: 'approved',
+    resolution_ms: resMs,
     latency_ms: latMs,
-    // FIFO: critical jobs come after all normal jobs (long queue wait)
-    // PRIORITY: critical jobs jump to position 1-3 (near-zero wait)
-    cumulative_ms_before: policy === 'fifo'
-      ? Math.round((55 + idx * 5) * 150) // waited behind ~55-80 normal jobs
-      : Math.round(idx * latMs * 0.9),    // processed near-front
     lane: policy,
   };
 }
 
-function mockRaceLane(policy: 'fifo' | 'priority'): RaceLane {
-  const n = 60;
-  const critical = 5;
+function mockRaceLane(policy: 'fifo' | 'prio'): RaceLane {
+  const n = 300;
+  const critical = 3;
   const jobMs = 150;
-  const totalMs = policy === 'fifo'
-    ? (n + critical) * jobMs
-    : n * jobMs + critical * jobMs * 0.5;
+  const drainMs = policy === 'fifo'
+    ? Math.round((n + critical) * jobMs / 2 + 1000) // 2 workers in parallel
+    : Math.round((n + critical) * jobMs / 2 + 900);
 
-  const pairs: RacePair[] = Array.from({ length: critical }, (_, i) => mockRacePair(i, policy, 0));
+  const pairs: RacePair[] = Array.from({ length: critical }, (_, i) => mockRacePair(i, policy));
+  const critResAvg = Math.round(pairs.reduce((s, p) => s + p.resolution_ms, 0) / pairs.length);
+  const critResMax = Math.max(...pairs.map((p) => p.resolution_ms));
+  const critLatAvg = Math.round(pairs.reduce((s, p) => s + p.latency_ms, 0) / pairs.length);
+  const critLatMax = Math.max(...pairs.map((p) => p.latency_ms));
 
   return {
     policy,
     total_jobs: n + critical,
     critical_jobs: critical,
-    critical_latency_ms: {
-      avg: Math.round(jobMs * 1.1),
-      max: Math.round(jobMs * 1.4),
-    },
-    critical_resolution_ms: {
-      avg: policy === 'fifo' ? Math.round(jobMs * (n + 2)) : Math.round(jobMs * 2),
-      max: policy === 'fifo' ? Math.round(jobMs * (n + critical)) : Math.round(jobMs * 4),
-    },
+    failed_jobs: 0,
+    critical_resolution_ms: { avg: critResAvg, max: critResMax },
+    critical_latency_ms: { avg: critLatAvg, max: critLatMax },
     critical_pairs: pairs,
-    total_duration_ms: Math.round(totalMs),
-    started_at: new Date(Date.now() - totalMs - 1000).toISOString(),
-    finished_at: new Date(Date.now() - 500).toISOString(),
+    drain_ms: drainMs,
   };
 }
 
@@ -253,9 +247,12 @@ function mockRaceLane(policy: 'fifo' | 'priority'): RaceLane {
 export function mockRaceResult(): RaceResult {
   return {
     fifo: mockRaceLane('fifo'),
-    priority: mockRaceLane('priority'),
-    n: 60,
-    critical: 5,
-    enqueued_at: new Date(Date.now() - 25_000).toISOString(),
+    priority: mockRaceLane('prio'),
+    n: 300,
+    critical: 3,
+    seed: 42,
+    enqueued_at: new Date(Date.now() - 55_000).toISOString(),
+    start_skew_ms: 12,
+    total: 303,
   };
 }

@@ -27,6 +27,12 @@ workers pull jobs from Redis and call it. Commands are PowerShell, run from the 
 | `timeline:outage:<ts_s>` | string | NX sentinel (120 s TTL) to deduplicate `redis_down` events per second across workers (**Block 1**) |
 | `race:result:latest` | string | JSON of the most recent completed race (fifo + priority lanes); written by `POST /api/cloud/race/start` (**Block 5**) |
 | `race:status` | string | `running` \| `done` \| `error`; set for the duration of a race run (**Block 5**) |
+| `race:meta` | string | race manifest JSON `{n, critical, seed, event_ids, critical_ids, started_at}`; written before barrier opens, read by partial GET (**Block 5**) |
+| `race:barrier` | string | `"1"` = lane workers may consume; absent = lane workers wait (closed before enqueue, opened after) (**Block 5**) |
+| `fifo:jobs` | zset | FIFO lane queue (QUEUE_NS=fifo workers only; never touched by main workers) (**Block 5**) |
+| `prio:jobs` | zset | priority lane queue (QUEUE_NS=prio workers only) (**Block 5**) |
+| `fifo:result:<id>` | string | result written by fifo lane worker; `critical_resolution_ms = finished_at − enqueued_at` (**Block 5**) |
+| `prio:result:<id>` | string | result written by prio lane worker (**Block 5**) |
 
 `<id>` = `event_id` = uuid5(sorted pair + `tca_utc`), so the same encounter always has the same id.
 
@@ -222,18 +228,24 @@ All observability work is strictly additive; existing endpoints, Redis keys, and
 - **Redis keys added**: `counters.enqueued` (new field in existing `counters` hash).
 
 ### Block 5 — `obs-5-ok`
-- **FIFO vs priority race** (`backend/cloud/api.py`): two-lane in-process race; both lanes process the **same** job set in different order. No extra Docker services; no main-queue interference.
+- **FIFO vs priority race** (`backend/cloud/api.py`): real two-lane race using namespaced Redis queues and Docker Compose worker containers. `worker_fifo` (QUEUE_NS=fifo) and `worker_prio` (QUEUE_NS=prio) run as 2 replicas each under `--profile race`. Main workers and autoscaler never touch lane queues.
+- **Namespace isolation**: `QUEUE_NS` env var prefixes every Redis key (`fifo:jobs`, `fifo:result:<id>`, etc.). Empty default leaves all existing key names byte-for-byte unchanged; `verify_queue.py` and `regression.py` need no edits.
+- **Start barrier**: `race:barrier` key — lane workers check `r.exists("race:barrier")` before each pop; absent = wait. Closed before enqueue, opened after (atomically with MULTI/EXEC that ZADDs both lanes simultaneously).
+- **Fairness**: same 303 events (300 normal + 3 critical, seed 42) enqueued to both lanes in one MULTI/EXEC pipeline. Workers see the same events; ordering differs by policy. Start skew (min fifo vs prio `started_at`) measured and reported.
+- **`critical_resolution_ms`**: `finished_at − enqueued_at` (wall-clock, written by real workers). Enqueue timestamps are set right before the pipeline (not at function start) so they are always <= `finished_at`. FIFO score for critical jobs uses a virtual `+2 s` offset to push them to the queue end; `enqueued_at` is the actual enqueue time.
 - **Race endpoints** (additive only):
-  - `POST /api/cloud/race/start {n, critical, critical_after_s}` → starts background race, returns immediately.
-  - `GET  /api/cloud/race/result` → 202 `{status:"running"}` while in-flight, full result when done, 404 if never run.
-  - `POST /api/cloud/race/reset` → clears `race:result:latest` and `race:status` only (never touches main queue).
-- **Namespace**: results stored at `race:result:latest` / `race:status` — no existing Redis key touched; namespace default (`Queue(ns="")`) is unchanged.
-- **Lane data**: each `RaceLane` includes `critical_pairs` with `primary_name`, `secondary_name`, `lead_h` (from `job.lead_h`), `cumulative_ms_before` (real ms before this pair's processing started), and `lane` field.
-- **Timeline events**: `race_started` and `race_done` emitted best-effort; `race_done` detail includes `lane="both"` and both critical avg latencies.
-- **SimClock** (`frontend/src/components/cloud/SimClock.tsx`): x1 / x60 (default) / x300 / x600 scale selector. Scales `cumulative_ms_before + latency_ms` for display only. Computes `LEAD TIME CONSUMED %` and `TCA MISSED` from `simMs / (lead_h * 3_600_000)`. Never writes to backend, never feeds stats or storage.
-- **RacePanel** (`frontend/src/components/cloud/RacePanel.tsx`): two-lane side-by-side view. Each lane: policy label, critical_latency stats, named pair list with TCA+h, per-pair lead gauge, priority-advantage badge.
-- **Mock mode**: `?mock=race` activates `mockRaceResult()` with 5 scripted critical pairs per lane; `?mock=` scenarios expanded to include `race`.
-- **`scripts/check_race.py`**: two-tier gate: `--quick` (R1–R5: start, result, lanes, pair fields, namespace; ~2 min) and full (R6–R8: adds priority-faster assertion, lead_h validity, regression.py).
+  - `POST /api/cloud/race/start {n, critical, seed, critical_offset_s}` → 503 if lane workers absent; starts background race, returns immediately with worker counts.
+  - `GET  /api/cloud/race/result` → partial `{status:"running", fifo_done, prio_done, total, fifo, priority}` while in-flight; full result when done; 404 if never run.
+  - `POST /api/cloud/race/reset` → clears `race:result:latest`, `race:status`, `race:meta`, `race:barrier` (never touches main queue).
+- **Lane data**: each `RaceLane` has `critical_resolution_ms` (wall-clock avg/max), `critical_latency_ms` (processing-only avg/max), `drain_ms` (wall-clock lane total), `failed_jobs`, and `critical_pairs` with `primary_name`, `secondary_name`, `risk`, `lead_h`, `resolution_ms`, `latency_ms`, `lane`.
+- **Timeline events**: `race_started` and `race_done` emitted best-effort with `lane="both"`, worker counts, and both critical avg resolution times.
+- **Lane field in worker timeline**: `worker_started`, `lease_expired`, `job_requeued`, `job_failed`, `worker_stopped` all carry `{lane: "fifo"|"prio"}` in detail when QUEUE_NS is set.
+- **SimClock** (`frontend/src/components/cloud/SimClock.tsx`): x1 / x60 (default) / x300 / x600 scale selector. `leadConsumedPct(resolutionMs, leadH, scale)` = `simMs(resolutionMs, scale) / (leadH * 3_600_000)`. Never writes to backend, never feeds stats or storage.
+- **RacePanel** (`frontend/src/components/cloud/RacePanel.tsx`): two live lane columns while running (progress bars + partial lane data), named critical pairs, TCA +h from `lead_h`, LEAD TIME CONSUMED gauges, priority-advantage badge based on `critical_resolution_ms` ratio.
+- **Mock mode**: `?mock=race` activates `mockRaceResult()` with 3 scripted critical pairs per lane; n=300, seed=42.
+- **Measured result** (seed 42, 300+3 events, 2+2 workers, LLM_MODE=stub 150 ms): `fifo critical_resolution_ms.avg ≈ 52 s`, `prio critical_resolution_ms.avg ≈ 630 ms`, **factor ≈ 82×** (gate requires ≥10×). Drain times within 0.5%. 0 failed jobs. `regression.py` PASS.
+- **`scripts/check_race.py`**: two-tier gate: `--quick` (R1–R5: workers live ≥2 each, start, 0 failed, pair fields, namespace; ~3 min) and full (R6–R10: adds priority ≥10× faster, drain within 5%, lead_h validity, main queue unchanged, regression.py).
+- **Screenshots**: `results/observability/block5_race_midrun_live.png` — live mid-race (114/303 done, priority CRIT RES AVG 521 ms, IRIDIUM 112 named pairs).
 
 ## Gotchas
 - Same `--seed` re-run without a reset is a **no-op**: event ids repeat and finished jobs are skipped. Reset first (`--reset`).

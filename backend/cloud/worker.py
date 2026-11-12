@@ -148,7 +148,11 @@ def main() -> None:
     signal.signal(signal.SIGINT, _request_stop)
 
     worker_id = socket.gethostname()
-    q = Queue()
+    # QUEUE_NS: set to "fifo" or "prio" for race lane workers; empty = main queue (default).
+    # Empty default leaves all existing key names byte-for-byte unchanged.
+    _ns_env = os.environ.get("QUEUE_NS", "")
+    _lane = _ns_env  # used for timeline event details
+    q = Queue(ns=(_ns_env + ":") if _ns_env else "")
     tracer = trace_mod.Tracer(q.r, q.ns)
     last_reap = 0.0
     done = 0
@@ -156,7 +160,9 @@ def main() -> None:
 
     # Emit worker_started (best-effort).
     try:
-        timeline.emit(q.r, "worker_started", worker_id, detail={"lease_s": q.lease_seconds})
+        _lane_detail = {"lane": _lane} if _lane else {}
+        timeline.emit(q.r, "worker_started", worker_id,
+                      detail={"lease_s": q.lease_seconds, **_lane_detail})
     except Exception:  # noqa: BLE001
         pass
 
@@ -198,6 +204,17 @@ def main() -> None:
     backoff = Backoff(f"worker {worker_id}")
 
     while not _stop:
+        # Race lane workers: pause until race:barrier is set by the orchestrator.
+        # Main queue workers (QUEUE_NS="") skip this check entirely.
+        if _lane:
+            try:
+                if not q.r.exists("race:barrier"):
+                    time.sleep(0.05)
+                    continue
+            except Exception:  # noqa: BLE001  — Redis down: also wait
+                time.sleep(0.05)
+                continue
+
         try:
             t = time.monotonic()
             if t - last_reap >= REAP_EVERY_S:
@@ -230,6 +247,7 @@ def main() -> None:
                     except Exception:  # noqa: BLE001
                         pass
 
+                _ld = {"lane": _lane} if _lane else {}
                 for job_info, _pd in zip(reaped, _pair_data):
                     jid, outcome, prev_worker, attempt_n = (
                         job_info["id"], job_info["outcome"],
@@ -237,11 +255,12 @@ def main() -> None:
                     try:
                         if outcome == "requeued":
                             timeline.emit(q.r, "lease_expired", worker_id,
-                                          detail={"prev_worker": prev_worker, **_pd}, event_id=jid)
+                                          detail={"prev_worker": prev_worker, **_pd, **_ld}, event_id=jid)
                             timeline.emit(q.r, "job_requeued", worker_id, event_id=jid,
-                                          detail=_pd)
+                                          detail={**_pd, **_ld})
                         else:
-                            timeline.emit(q.r, "job_failed", worker_id, event_id=jid)
+                            timeline.emit(q.r, "job_failed", worker_id, event_id=jid,
+                                          detail=_ld if _ld else None)
                     except Exception:  # noqa: BLE001
                         pass
                     tracer.finish_attempt(jid, attempt_n, "lease_expired")
@@ -264,7 +283,8 @@ def main() -> None:
     beat_thread.join()      # stop beating BEFORE deregistering, or it could re-register
     try:
         q.deregister(worker_id)
-        timeline.emit(q.r, "worker_stopped", worker_id, detail={"jobs_done": done})
+        timeline.emit(q.r, "worker_stopped", worker_id,
+                      detail={"jobs_done": done, **(_lane_detail)})
     except RETRYABLE:
         pass                              # Redis down at shutdown: the heartbeat just goes stale
     except Exception:  # noqa: BLE001

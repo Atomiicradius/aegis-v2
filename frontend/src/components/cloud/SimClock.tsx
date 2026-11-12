@@ -14,16 +14,16 @@ export function simMs(realMs: number, scale: ClockScale): number {
   return realMs * scale;
 }
 
-/** LEAD TIME CONSUMED %: simulated elapsed / lead window (clamped 0–100). */
-export function leadConsumedPct(cumulativeBeforeMs: number, latencyMs: number, leadH: number, scale: ClockScale): number {
-  const finishSim = simMs(cumulativeBeforeMs + latencyMs, scale);
+/** LEAD TIME CONSUMED %: simulated wall-clock resolution / lead window (clamped 0–100). */
+export function leadConsumedPct(resolutionMs: number, leadH: number, scale: ClockScale): number {
+  const finishSim = simMs(resolutionMs, scale);
   const leadMs = leadH * 3_600_000;
   return Math.min(100, Math.round((finishSim / leadMs) * 100));
 }
 
 /** Returns true when the simulated finish time exceeds the lead window. */
-export function isTcaMissed(cumulativeBeforeMs: number, latencyMs: number, leadH: number, scale: ClockScale): boolean {
-  return simMs(cumulativeBeforeMs + latencyMs, scale) > leadH * 3_600_000;
+export function isTcaMissed(resolutionMs: number, leadH: number, scale: ClockScale): boolean {
+  return simMs(resolutionMs, scale) > leadH * 3_600_000;
 }
 
 type Props = {
