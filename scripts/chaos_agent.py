@@ -109,21 +109,28 @@ def _inject_fault(scenario: str) -> None:
 
 # ---- HTTP handler -----------------------------------------------------------
 
-CORS_ORIGIN = "http://localhost:5173"
+import re as _re
+_CORS_ALLOW = _re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?$")
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # silence request logs
         pass
 
+    def _origin(self) -> str:
+        o = self.headers.get("Origin", "")
+        return o if _CORS_ALLOW.match(o) else "http://localhost:5173"
+
     def _send(self, code: int, body: dict) -> None:
         data = json.dumps(body).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
+        self.send_header("Access-Control-Allow-Origin", self._origin())
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        # Chrome Private Network Access: allow localhost pages to reach 127.0.0.1
+        self.send_header("Access-Control-Allow-Private-Network", "true")
         self.end_headers()
         self.wfile.write(data)
 

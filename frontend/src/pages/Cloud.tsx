@@ -23,7 +23,9 @@ const DASH = '--';
 
 /** Hide pre-animation content only when motion is allowed (reduced-motion users get the final state). */
 const MOTION_OK = typeof window !== 'undefined' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-const HIDDEN = MOTION_OK ? { opacity: 0 } : undefined;
+// CSS class, not inline style: anime.js sets element.style.opacity inline which always wins
+// over a class rule, so React re-renders won't reset it back to 0 on every stats poll.
+const HIDDEN = MOTION_OK ? 'opacity-0' : '';
 
 type Action = { label: string; run: () => Promise<Result<unknown>>; confirm?: string };
 
@@ -118,7 +120,7 @@ export default function Cloud() {
         {/* ── hero ── */}
         <section className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]">
           <div ref={leftRef} className="flex min-w-0 flex-col gap-5">
-            <div style={HIDDEN}>
+            <div className={HIDDEN}>
               <div className="flex flex-wrap items-center gap-3 font-mono text-[14px] uppercase tracking-[0.18em] text-text-muted">
                 <span className="text-accent-light">cluster / ops-02 / synthetic load</span>
                 <span aria-hidden="true" className="h-px w-10 bg-border-light" />
@@ -134,7 +136,7 @@ export default function Cloud() {
               </p>
             </div>
 
-            <div style={HIDDEN} className="flex flex-1 flex-col">
+            <div className={`flex flex-1 flex-col ${HIDDEN}`}>
               <dl className="grid flex-[2] grid-cols-2 gap-px border border-border bg-border" aria-label="Primary telemetry">
                 <StatCell label="Queue depth" value={n(s?.queue_depth, 4)} tone="accent" sub={s && s.processing > 0 ? `${s.processing} in flight` : 'drained'} />
                 <StatCell label="Throughput" value={s ? s.throughput_per_s.toFixed(1) : DASH} sub="jobs / s" />
@@ -150,7 +152,7 @@ export default function Cloud() {
 
           </div>
 
-          <section ref={scopeRef} className="relative flex min-w-0 flex-col border border-border bg-surface-muted/80" style={HIDDEN} aria-label="Cluster constellation">
+          <section ref={scopeRef} className={`relative flex min-w-0 flex-col border border-border bg-surface-muted/80 ${HIDDEN}`} aria-label="Cluster constellation">
             <CornerBrackets />
             <PanelHeader
               eyebrow="Cluster constellation"
@@ -197,7 +199,7 @@ export default function Cloud() {
 
         {/* ── latency + trace + register ── */}
         <div ref={lowerRef} className="mt-5 flex flex-col gap-5">
-          <section className="grid gap-5 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)]" aria-label="Latency" style={HIDDEN}>
+          <section className={`grid gap-5 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] ${HIDDEN}`} aria-label="Latency">
             <div className="border border-border bg-surface-muted/75">
               <PanelHeader eyebrow="Latency" title="Enqueue to finish" right={<span className="font-mono text-[14px] uppercase tracking-[0.12em] text-text-muted">last 500 jobs</span>} />
               <dl className="grid grid-cols-3 divide-x divide-border">
@@ -239,17 +241,17 @@ export default function Cloud() {
             </div>
           </section>
 
-          <section className="grid gap-5 md:grid-cols-3" aria-label="Traces" style={HIDDEN}>
+          <section className={`grid gap-5 md:grid-cols-3 ${HIDDEN}`} aria-label="Traces">
             <Sparkline label="Queue depth" tone="accent-light" data={history.map((h) => h.depth)} current={n(s?.queue_depth, 4)} format={(v) => String(Math.round(v))} />
             <Sparkline label="Throughput jobs/s" tone="success" data={history.map((h) => h.throughput)} current={s ? s.throughput_per_s.toFixed(1) : DASH} />
             <Sparkline label="Live workers" tone="warning-light" data={history.map((h) => h.live)} current={n(alive, 2)} format={(v) => String(Math.round(v))} />
           </section>
 
-          <div style={HIDDEN}>
+          <div className={HIDDEN}>
             <ResolutionRecords mock={mock} />
           </div>
 
-          <section className="grid gap-5 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]" style={HIDDEN}>
+          <section className={`grid gap-5 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] ${HIDDEN}`}>
             <div className="border border-border bg-surface-muted/75">
               <PanelHeader eyebrow="Worker register" title="Cluster nodes" right={<span className="font-mono text-[14px] uppercase tracking-[0.12em] text-text-muted">{s ? `${s.workers.length} registered` : DASH}</span>} />
               <ol className="divide-y divide-border">
@@ -286,13 +288,13 @@ export default function Cloud() {
             </aside>
           </section>
           {/* ── incident timeline + chaos dock ── */}
-          <section className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]" style={HIDDEN} aria-label="Observability">
+          <section className={`mt-5 grid gap-5 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] ${HIDDEN}`} aria-label="Observability">
             <IncidentTimeline events={timelineEvents} throughputHistory={history.map((h) => h.throughput)} />
             <ChaosDock events={timelineEvents} mock={mock} />
           </section>
 
           {/* ── Block 5: FIFO vs priority race ── */}
-          <div className="mt-5" style={HIDDEN}>
+          <div className={`mt-5 ${HIDDEN}`}>
             <RacePanel mock={mock} />
           </div>
 
