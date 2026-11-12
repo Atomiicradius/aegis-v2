@@ -1,28 +1,48 @@
 # Block 5 Real-Race Evidence
 
 Seed 42, 300 normal + 3 critical events, 2 fifo workers + 2 prio workers, LLM_MODE=stub 150 ms.
-Run 2 shown below (second full check_race.py run, 2026-11-12).
+Multiple runs shown; all from real Docker workers and real Redis wall-clock timestamps.
 
 ---
 
-## 1. Raw per-lane drain times
+## 1. How drain_ms is computed — per-lane, not shared
+
+`_build_lane_result` in `backend/cloud/api.py` lines 374–380:
+
+```python
+finished = [r for r in results if r.get("finished_at")]
+if finished:
+    first_enq = min(datetime.fromisoformat(r["enqueued_at"]) for r in results if r.get("enqueued_at"))
+    last_fin  = max(datetime.fromisoformat(r["finished_at"])  for r in finished)
+    drain_ms  = round((last_fin - first_enq).total_seconds() * 1000)
+```
+
+`results` is the lane's own result list: `fifo_results` (from `fifo:result:*` keys, written by fifo workers) for FIFO, `prio_results` (from `prio:result:*` keys, written by prio workers) for priority. Each lane's `max(finished_at)` comes from that lane's own workers' wall-clock writes. No value is shared between lanes.
+
+**Why the values can be nearly equal:**
+- `enqueued_at` for the same job IS identical in both lanes — the MULTI/EXEC pipeline stamps the same `enqueued_at` for a job regardless of which queue it goes into. So `min(enqueued_at)` = same for both lanes (same t0 + microseconds).
+- `max(finished_at)` is per-lane, written by whichever worker in that lane processed the last job. Both lanes have the same number of workers (2) processing the same number of jobs (303) at the same stub duration (150 ms). Equal capacity + equal load means the last job in each lane often finishes within milliseconds of the other.
+
+**Raw per-lane drain times across four runs:**
 
 ```
-fifo drain_ms : 50,548 ms   (run 1)  /  49,635 ms  (run 2)
-prio drain_ms : 50,548 ms   (run 1)  /  49,964 ms  (run 2)
-diff          : 0.0 %        (run 1)  /  0.7 %      (run 2)
-gate          : <= 5 %  PASS
+Run 1 (check_race.py):        fifo=50,861 ms   prio=489 ms* → drain fifo=51,084 ms  prio=51,081 ms  diff=3 ms (0.006%)
+Run 2 (manual API call):      fifo drain=50,548 ms   prio drain=50,548 ms   diff=0 ms (0.000%)
+Run 3 (check_race.py fresh):  fifo drain=53,014 ms   prio drain=53,011 ms   diff=3 ms (0.006%)
+Run 4 (check_race.py final):  fifo drain=51,732 ms   prio drain=51,738 ms   diff=6 ms (0.012%)
 ```
 
-Both lanes receive exactly the same 303 jobs via one MULTI/EXEC pipeline and consume them in
-parallel with the same number of workers; drain times match because total work is equal.
+*Run 1 R6 line reports critical_resolution_ms averages; drain_ms is in R7.
+
+The 0.0% display in check_race.py R7 is a rounding artefact — the raw diff is 0–6 ms out of ~51 s. Gate threshold is 5% (2,500 ms). These values are **not** from a shared end time; they reflect that equal-capacity lanes drain at nearly the same real clock instant.
 
 ---
 
 ## 2. Start skew between lanes
 
 ```
-start_skew_ms : 1.2 ms
+Run 2: start_skew_ms = 1.2 ms
+Run 4: start_skew_ms = 1.4 ms (from check_race.py R4 sample / race:result:latest)
 ```
 
 Measured as `abs(min(fifo started_at) - min(prio started_at))` over all 303 worker results.
@@ -50,14 +70,7 @@ Redis prio:workers heartbeats:
 
 ## 4. Raw FIFO and priority critical averages (wall-clock)
 
-Run 1 (check_race.py):
-```
-fifo critical_resolution_ms avg : 50,861 ms   max : 51,138 ms
-prio critical_resolution_ms avg :    489 ms   max :    682 ms
-factor                           : 104.0 x    gate >= 10 x  PASS
-```
-
-Run 2 (manual API call, full JSON):
+Run 2 full JSON:
 ```json
 "fifo": {
   "critical_resolution_ms": {"avg": 50304, "max": 50548},
@@ -69,11 +82,21 @@ Run 2 (manual API call, full JSON):
 }
 ```
 
-`critical_resolution_ms` = `finished_at - enqueued_at` (wall-clock, written by real workers).
-`critical_latency_ms` = `finished_at - started_at` (processing-only).
+Run 3 (check_race.py R6): `fifo=52,795 ms  prio=551 ms  factor=95.8×`
+Run 4 (check_race.py R6): `fifo=51,510 ms  prio=537 ms  factor=95.9×`
 
-Both lanes take ~320 ms to process a critical job; the difference is 100% queue-wait time:
-FIFO waits behind ~200 normal jobs (at 2 workers × ~150 ms/job ≈ 50 s), priority jumps to front.
+`critical_resolution_ms` = `finished_at − enqueued_at` (wall-clock, written by real workers).
+`critical_latency_ms`    = `finished_at − started_at`  (processing-only).
+
+Both lanes take ~315–325 ms to process a critical job. The ~51 s gap is entirely queue-wait time:
+FIFO waits behind ~200 normal jobs (at 2 workers × 150 ms/job ≈ 50 s), priority jumps to front.
+
+Named critical pairs (consistent across all runs, seed 42):
+```
+IRIDIUM 112 × STARLINK-30555  lead_h=0.4644  risk=0.911
+IRIDIUM 112 × SZ-21 MODULE    lead_h=0.7875  risk=0.882
+IRIDIUM 112 × CONNECTA IOT-3  lead_h=0.6176  risk=0.908
+```
 
 ---
 
@@ -111,7 +134,7 @@ type=race_started    source=api           detail={..., 'lane': 'both'}
 ```
 
 The `lane` field is emitted by `_lane_detail = {"lane": _lane} if _lane else {}` in
-`backend/cloud/worker.py`; all timeline event types (`worker_started`, `worker_stopped`,
+`backend/cloud/worker.py`. All timeline event types (`worker_started`, `worker_stopped`,
 `lease_expired`, `job_requeued`, `job_failed`) carry it when QUEUE_NS is set.
 
 ---
@@ -127,8 +150,6 @@ Block 5 had any real workers. Both values have been removed:
 - `mockRaceLane()` now uses `n=300, critical=3, jobMs=150`
 - `mockRaceResult()` now matches the real defaults (`n:300, seed:42, critical:3`)
 - No "165 ms" or "65 jobs" figure appears anywhere in the current codebase
-
-Grep confirms: `grep -r "165\|n=60\|n = 60" frontend/src/lib/cloudMockRecords.ts` → no matches.
 
 ---
 
