@@ -1,5 +1,8 @@
 # DEMO.md — live demo script (PowerShell, from `D:\aegis-v2`)
 
+> For a concise audience-facing version of this script, see PRESENT.md.
+> For honest talking points (simulated vs real, latency caveats), see PRESENT.md §Honest talking points.
+
 Timings are from rehearsals on this machine (stub 150 ms/call = ~0.3 s per job per worker, ~3.2 jobs/s per worker).
 Use **two PowerShell windows**: A = commands, B = autoscaler. Dashboard: http://localhost:8010
 
@@ -131,6 +134,37 @@ Verify the chaos gate:
 python scripts\check_chaos.py --quick     # < 1 min, checks 1-4
 python scripts\check_chaos.py --full      # checks 1-7 including regression.py
 ```
+
+## 9. FIFO vs priority race (Block 5, ~2 min)
+
+Start the race lane workers (2 fifo + 2 prio) if not already running:
+```powershell
+docker compose --profile race up -d
+```
+Confirm: `docker compose ps` shows `worker_fifo` ×2 and `worker_prio` ×2.
+
+Navigate to `/cloud` → **Race** panel → click **Start Race** (default: 300 events + 3 critical, seed 42).
+
+Look at: both progress bars update live every 2 s (fifo NNN/303, priority NNN/303). After ~52 s the race finishes and both lane panels appear side by side.
+- Priority CRIT RES AVG ~460–630 ms; FIFO CRIT RES AVG ~49–52 s
+- Advantage badge: **91–104×** faster for critical events in priority lane
+- Drain times: within 0–0.7% (same total work, different order)
+- Named critical pairs: IRIDIUM 112 × STARLINK-30555 / SZ-21 MODULE / CONNECTA IOT-3; `lead_h`, `risk`, TCA gauge, SimClock
+
+Say: "Same 303 jobs enqueued to both queues at the same Redis instant. Priority resolves the 3 high-risk conjunctions in under a second; FIFO waits for the whole queue first. Drain time is identical because the total work is the same."
+
+Re-run: click **clear** then **Start Race**. Reset lane queues only: `Invoke-RestMethod -Method Post http://localhost:8010/api/cloud/race/reset`.
+
+Verify the race gate:
+```powershell
+python scripts\check_race.py        # full: R1–R10 including regression, ~3 min
+python scripts\check_race.py --quick  # R1–R5 only, ~1 min
+```
+
+**Honest caveats:**
+- The ~300–700 ms priority resolution time is queue-wait-free processing, not response latency to a real satellite uplink.
+- The SimClock "lead time consumed" gauge is display-only; it scales demo wall-clock ms by a user factor (×60 default) and has no effect on any real timer.
+- DLQ / poison-pill handling and globe pulse on critical conjunctions are designed but not built (see PRESENT.md REAL vs SIMULATED table).
 
 ## Cleanup
 ```powershell

@@ -1,0 +1,172 @@
+================================================================
+AEGIS OBSERVABILITY BRANCH â€” FINAL CHECK RUN
+Date: 2026-11-12T13:27:40Z
+Branch: obs-block3-final
+Commit: db307d0
+================================================================
+
+================================================================
+STEP 1: verify_queue.py (run inside container)
+================================================================
+ Container aegis-v2-redis-1 Running 
+PASS  c. idempotency: duplicate complete() keeps first result  [kept=first]
+PASS  c. idempotency: enqueue() of a finished job is skipped
+PASS  d. reaper: expired lease requeued once, second reap does nothing  [reap1=(1, 0) reap2=(0, 0)]
+PASS  d. reaper: requeued with ORIGINAL score, retries=1  [score=-0.7]
+PASS  d. reaper: after MAX_RETRIES the job is written as failed  [retries=4 status=failed]
+PASS  a. drain: 100 jobs all have results  [workers=2, completed=100]
+PASS  a. drain: nothing left processing/queued  [processing=0 depth=0]
+      priority: critical job (enqueued last) started #2 of 101 with 2 workers
+      fifo: critical job (enqueued last) started #101 of 101 with 2 workers
+PASS  b. priority policy: critical starts within workers*2  [rank=2 limit=4]
+PASS  b. fifo policy: critical starts near the end  [rank=101 of 101]
+
+ALL PASS
+
+================================================================
+STEP 2: regression.py
+================================================================
+storm started: 300 events + 3 critical @ +5s, workers running=2
+
+drained in 50.3s -> 6.02 jobs/s overall; retries=0, p95=45586 ms
+
+PASS  completed == 303   (completed=303)
+PASS  failed == 0   (failed=0)
+PASS  queue == 0 and processing == 0   (queue=0 processing=0)
+PASS  critical avg latency < overall avg / 5   (critical avg=550 ms (n=4), overall avg=23771 ms, limit=4754 ms)
+PASS  live workers >= 2   (live=2)
+
+REGRESSION PASS
+
+================================================================
+STEP 3: check_trace.py --quick
+================================================================
+
+=== Test 1: worker-kill trace ===
+  Killed worker be098d0eb8c7; waiting for requeue + completion ...
+PASS  1a. all jobs complete after kill
+PASS  1b. failed == 0  [failed=0]
+PASS  1c. retries_total >= 1  [retries=1]
+PASS  1d. at least one retried job in recent  [retried=1]
+PASS  1e. trace has 2 attempts  [attempts=2]
+PASS  1f. attempt 1 outcome=lease_expired  [outcome=lease_expired]
+PASS  1g. attempt 2 outcome=completed  [outcome=completed]
+PASS  1h. different workers  [w1=be098d0eb8c7 w2=ff47b3ebbd82]
+PASS  1i. timeline has lease_expired
+PASS  1j. timeline has job_requeued
+  Restarted worker pool to 2.
+
+=== Test 3: overhead measurement ===
+  Microbenchmark (2000 iters): on=0.626 ms/job  off=0.002 ms/job  overhead=0.624 ms/job
+PASS  3a. trace overhead <= 1.5 ms/job (microbenchmark)  [overhead=0.624 ms/job]
+  Throughput (traces on):  60 jobs in 10.2 s = 5.89 jobs/s
+PASS  3b. throughput sanity (>= 3 jobs/s with traces)  [rate=5.89]
+
+=== Overhead summary ===
+  Block 1+2: Tracer.start/finish_attempt + timeline.emit  = 0.624 ms/job (microbenchmark, 2000 iters)
+  Block 3:   SET NX lock replaces 30-s bucket; O(1) Redis SETNX per outage event,
+             not per job -- zero additional per-job overhead in the steady state.
+
+Total wall time: 27 s
+
+ALL PASS
+
+================================================================
+STEP 4: check_chaos.py --quick
+================================================================
+19:00:11 Check 1: stats endpoint has enqueued_total
+19:00:11   PASS  enqueued_total present in /api/cloud/stats
+19:00:11 Check 2: /api/cloud/integrity
+19:00:11   PASS  all integrity fields present
+19:00:11   PASS  integrity consistent=true
+19:00:11 Check 3: timeline inject endpoint
+19:00:11   PASS  inject scale_up
+19:00:11   PASS  inject scale_down
+19:00:11   PASS  inject chaos_inject
+19:00:11   PASS  inject chaos_fault
+19:00:11   PASS  inject chaos_recover
+19:00:11   PASS  inject chaos_redis_kill
+19:00:11   PASS  inject chaos_worker_kill
+19:00:11   PASS  non-whitelisted type rejected with 422
+19:00:11 Check 4: GET /api/cloud/timeline returns injected events
+19:00:11   PASS  timeline contains injected scale_up and chaos_fault
+19:00:11   PASS  timeline events have seq and ts fields
+19:00:11 Check 4b: reset zeroes enqueued_total
+19:00:13   PASS  reset zeroes enqueued_total (65 -> 0)
+19:00:13 Check 4c: duplicate submit does not double-count enqueued_total
+19:00:14   PASS  enqueued_total incremented by exactly 10 for storm of 10
+19:00:14 
+19:00:14 Quick gate done: 15 passed, 0 failed
+
+================================================================
+STEP 5: check_domain.py
+================================================================
+19:00:14 Check D1-1: /recent rows include tca_h
+19:00:16   PASS  recent row has tca_h=3.59 h (in [0, 24])
+19:00:16 Check D1-2: /trace/{id} includes domain block
+19:00:16   PASS  domain block present with all required fields (lead_h=3.5911 h)
+19:00:16 Check D1-3: domain.a and domain.b have name, group, operator
+19:00:16   PASS  domain.a: STARLINK-6085 (starlink) / SpaceX Starlink
+19:00:16   PASS  domain.b: BIFROST-DNK (active) / Commercial operator
+19:00:16 Check D1-4: risk_parts values in [0,1] and consistent with reported risk
+19:00:16   PASS  risk_parts consistent: 0.5*0.606+0.3*0.85+0.2*0.52~=0.662 vs 0.662
+19:00:16 Check D1-5: compact outcome fields (maneuvering_norad, validation_clear, residual_km)
+19:00:16   PASS  compact outcome: maneuvering_norad=57115 validation_clear=True residual_km=6.8
+19:00:16 
+19:00:16 Domain gate done: 6 passed, 0 failed
+
+================================================================
+STEP 6: check_race.py (full)
+================================================================
+
+=== R1: race lane workers live (fifo:workers and prio:workers >= 2 each) ===
+  PASS R1a. fifo lane workers >= 2 [live=2]
+  PASS R1b. prio lane workers >= 2 [live=2]
+
+=== R2: POST /api/cloud/race/start ===
+  PASS R2. race start returns status=started [status=started fifo_workers=2 prio_workers=2]
+
+=== R3: GET /api/cloud/race/result (wait up to 5 min, 0 failed) ===
+  t+15s: running … fifo 90/303 prio 90/303
+  t+30s: running … fifo 185/303 prio 184/303
+  t+45s: running … fifo 279/303 prio 278/303
+  t+51s: result received
+  PASS R3a. race result available within 5 min [n=300 total=303]
+  PASS R3b. fifo lane: 0 failed jobs [failed=0]
+  PASS R3c. prio lane: 0 failed jobs [failed=0]
+
+=== R4: critical pair fields (names, lead_h, resolution_ms, lane) ===
+  PASS R4a. all pairs have primary_name + secondary_name [0 missing]
+  PASS R4b. all pairs have lead_h not null [0 null]
+  PASS R4c. all pairs have lane=fifo|prio [0 invalid]
+  PASS R4d. all pairs have resolution_ms (wall-clock) [0 missing]
+  sample: IRIDIUM 112 x STARLINK-30555 lead_h=0.4644 resolution_ms=49311 lane=fifo
+
+=== R5: namespace isolation ===
+  PASS R5a. race:result:latest exists
+  PASS R5b. no 'race:jobs' key (main namespace untouched) [race:jobs should not exist]
+  PASS R5c. fifo: or prio: namespaced keys seen
+
+=== R6: priority critical_resolution_ms.avg >= 10x lower than FIFO ===
+  PASS R6. priority critical resolution >= 10x lower [fifo=49524ms prio=543ms factor=91.2x]
+
+=== R7: total drain times within 5% ===
+  PASS R7. drain times within 5% [fifo=49635ms prio=49964ms diff=0.7%]
+
+=== R8: all critical pairs have lead_h in (0, 24] ===
+  PASS R8. all lead_h in (0, 24] [0 invalid: []]
+
+=== R9: main queue stats consistent after race ===
+  PASS R9a. /api/cloud/stats responds [queue_depth=0]
+  PASS R9b. race:status=done [status=done]
+  PASS R9c. main 'jobs' key is for main queue (not lane jobs) [redis_jobs=0 stats_depth=0]
+
+=== R10: regression.py ===
+  PASS R10. regression.py PASS [PASS  live workers >= 2   (live=2) |  | REGRESSION PASS]
+
+Race gate (full): 20/20 passed
+ALL PASS
+
+================================================================
+ALL STEPS DONE
+================================================================

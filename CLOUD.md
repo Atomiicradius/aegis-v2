@@ -197,6 +197,19 @@ docker compose down
 
 All observability work is strictly additive; existing endpoints, Redis keys, and worker behaviour are unchanged.
 
+### What is built vs designed
+
+| Feature | Status | Tag |
+|---|---|---|
+| Per-job trace waterfall (`trace:<id>`, TraceWaterfall UI) | **BUILT** | `obs-2-ok` |
+| System timeline (`timeline` list, IncidentTimeline UI) | **BUILT** | `obs-1-ok` |
+| `enqueued_total` counter, `/integrity` endpoint | **BUILT** | `obs-3-ok` |
+| Chaos dock (ChaosDock UI, chaos_agent.py, timeline inject) | **BUILT** | `obs-3-ok` |
+| Domain block on /trace (operator profiles, risk_parts, lead_h) | **BUILT** | `obs-4-ok` |
+| FIFO vs priority race (real workers, namespaced queues, RacePanel) | **BUILT** | `obs-5-ok` |
+| DLQ / poison-pill handling (`dead_lettered` outcome) | **DESIGNED, NOT BUILT** — outcome string reserved in schema; no DLQ queue or endpoint exists |
+| Globe pulse on critical conjunction | **DESIGNED, NOT BUILT** — Block 4 work; globe and ISS–CSS flow unchanged |
+
 ### Block 1 — `obs-1-ok`
 - **Trace recording** (`backend/cloud/trace.py`): per-job attempt waterfall in `trace:<id>` (1 h TTL). Fields: `enqueued_at`, `risk`, `is_critical`, `attempts[]` (outcome, `process_start_ms`, `process_end_ms`, `negotiate_ms`), `completed_at`, `final_status`.
 - **Timeline** (`backend/cloud/timeline.py`): system-level event log in `timeline` capped list (2 000 entries). `GET /api/cloud/timeline?since_seq=N` returns events ascending. `GET /api/cloud/trace/{id}` returns the per-job waterfall.
