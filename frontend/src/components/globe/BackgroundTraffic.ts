@@ -7,7 +7,7 @@
  * of work per slice for ~100 satellites); nothing runs while the tab is hidden; with prefers-reduced-motion the
  * layer is drawn once and never updated. Any error is swallowed: the Monitor then looks exactly as it did before.
  */
-import { type RefObject, useEffect } from 'react';
+import { type RefObject, useEffect, useRef } from 'react';
 import type { GlobeMethods } from 'react-globe.gl';
 import { degreesLat, degreesLong, eciToGeodetic, gstime, propagate, twoline2satrec, type SatRec } from 'satellite.js';
 import { BufferGeometry, Float32BufferAttribute, Points, PointsMaterial } from 'three';
@@ -25,7 +25,9 @@ export function useBackgroundTraffic(
   enabled: boolean,
   sats: TrafficSat[],
   reducedMotion: boolean,
-): void {
+): RefObject<Float32Array | null> {
+  // The live position array (scene units), shared read-only with the hover picker; null while the layer is off.
+  const positionsRef = useRef<Float32Array | null>(null);
   useEffect(() => {
     const globe = globeRef.current;
     if (!enabled || !ready || !globe || sats.length === 0) return;
@@ -33,6 +35,7 @@ export function useBackgroundTraffic(
     let layer: Points | null = null;
     let timer: number | undefined;
     const dispose = () => {
+      positionsRef.current = null;
       window.clearInterval(timer);
       if (layer) {
         layer.removeFromParent();
@@ -54,6 +57,7 @@ export function useBackgroundTraffic(
       // NB: Float32BufferAttribute COPIES the array it is given, so always write through attribute.array.
       const attribute = new Float32BufferAttribute(new Float32Array(n * 3), 3); // all zero = inside the Earth = hidden until first update
       const positions = attribute.array as Float32Array;
+      positionsRef.current = positions;
       const geometry = new BufferGeometry();
       geometry.setAttribute('position', attribute);
       // Dim and small: well below the curated dots (which glow through the bloom pass) so those stay dominant.
@@ -97,4 +101,5 @@ export function useBackgroundTraffic(
     }
     return dispose;
   }, [globeRef, ready, enabled, sats, reducedMotion]);
+  return positionsRef;
 }

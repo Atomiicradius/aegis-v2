@@ -19,6 +19,16 @@ export function parseTrafficSetting(search: string): TrafficSetting {
   return Number.isFinite(n) && n > 0 ? n : 'all';
 }
 
+/**
+ * `?hover=off` disables the hover card AND the orbit ring on the background traffic (the dots stay);
+ * `?hover=card` keeps the card but skips the orbit ring; anything else (default) = card + ring.
+ */
+export type HoverMode = 'off' | 'card' | 'full';
+export function parseHoverMode(search: string): HoverMode {
+  const v = new URLSearchParams(search).get('hover')?.trim().toLowerCase();
+  return v === 'off' ? 'off' : v === 'card' ? 'card' : 'full';
+}
+
 let pending: Promise<TrafficSat[]> | null = null;
 
 /** Fetches the pool once per page load. Never rejects: failure resolves to []. */

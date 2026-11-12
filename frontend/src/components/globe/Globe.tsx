@@ -7,7 +7,8 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 
 import earthBumpTexture from '../../assets/earth-bump.png';
 import earthNightTexture from '../../assets/earth-night.jpg';
-import { useTrafficSelection } from '../../lib/useTrafficSelection';
+import { parseHoverMode, useTrafficSelection } from '../../lib/useTrafficSelection';
+import { BackgroundHover } from './BackgroundHover';
 import { useBackgroundTraffic } from './BackgroundTraffic';
 import { DOCKED_OBJECT_GROUPS } from './dockedGroups';
 import { positionKmToGeo } from './eciToGeo';
@@ -260,7 +261,8 @@ export const Globe = forwardRef<GlobeHandle, Props>(function Globe(
   // transition or trajectory, and not while the persistent globe sits hidden behind other pages).
   const onMonitor = useLocation().pathname === '/monitor' && (mode === 'live' || mode === 'conjunction');
   const trafficSelection = useTrafficSelection(useMemo(() => trackedObjects.map((o) => o.norad_id), [trackedObjects]), onMonitor);
-  useBackgroundTraffic(globeRef, isGlobeReady, onMonitor, trafficSelection.sats, Boolean(prefersReducedMotion));
+  const trafficPositionsRef = useBackgroundTraffic(globeRef, isGlobeReady, onMonitor, trafficSelection.sats, Boolean(prefersReducedMotion));
+  const hoverMode = parseHoverMode(useLocation().search);
 
   const flaggedIds = useMemo(() => conjunctionAlert ? new Set([conjunctionAlert.primary_id, conjunctionAlert.secondary_id]) : new Set<string>(), [conjunctionAlert]);
 
@@ -462,6 +464,8 @@ export const Globe = forwardRef<GlobeHandle, Props>(function Globe(
         pathDashAnimateTime={3000}
       />
       </motion.div>
+      {/* Hover card for the display-only background satellites (renders nothing until one is hovered) */}
+      <BackgroundHover globeRef={globeRef} ready={isGlobeReady} enabled={onMonitor && hoverMode !== 'off'} orbit={hoverMode === 'full'} sats={trafficSelection.sats} positionsRef={trafficPositionsRef} />
       {mode !== 'transition' && (
         <GlobeHud
           markers={hudMarkers.map(({ norad_id, name, x, y, isFlagged, count, members }) => ({
